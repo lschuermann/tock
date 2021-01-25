@@ -249,6 +249,7 @@ pub unsafe fn main() {
         &artye21,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
+        None,
         scheduler,
         &main_loop_cap,
     );

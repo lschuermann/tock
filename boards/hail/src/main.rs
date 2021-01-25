@@ -486,6 +486,7 @@ pub unsafe fn main() {
         &hail,
         chip,
         Some(&hail.ipc),
+        None,
         scheduler,
         &main_loop_capability,
     );

@@ -806,6 +806,7 @@ pub unsafe fn main() {
         &stm32f412g,
         chip,
         Some(&stm32f412g.ipc),
+        None,
         scheduler,
         &main_loop_capability,
     );

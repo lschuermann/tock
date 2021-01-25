@@ -409,6 +409,7 @@ pub unsafe fn main() {
         &earlgrey_nexysvideo,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
+        None,
         scheduler,
         &main_loop_cap,
     );

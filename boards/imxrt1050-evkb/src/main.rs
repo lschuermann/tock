@@ -460,6 +460,7 @@ pub unsafe fn main() {
         &imxrt1050,
         chip,
         Some(&imxrt1050.ipc),
+        None,
         scheduler,
         &main_loop_capability,
     );

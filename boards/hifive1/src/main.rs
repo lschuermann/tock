@@ -253,6 +253,7 @@ pub unsafe fn main() {
         &hifive1,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
+        None,
         scheduler,
         &main_loop_cap,
     );

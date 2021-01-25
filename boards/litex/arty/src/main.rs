@@ -469,6 +469,7 @@ pub unsafe fn main() {
         &litex_arty,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
+        None,
         scheduler,
         &main_loop_cap,
     );

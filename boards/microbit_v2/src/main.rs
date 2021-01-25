@@ -562,6 +562,7 @@ pub unsafe fn main() {
         &microbit,
         chip,
         Some(&microbit.ipc),
+        None,
         scheduler,
         &main_loop_capability,
     );
