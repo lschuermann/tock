@@ -57,6 +57,7 @@ stabilized or not (a "✓" indicates stability) in the Tock 1.0 release.
 |1.0| Driver Number | Driver           | Description                                |
 |---|---------------|------------------|--------------------------------------------|
 |   | 0x10000       | IPC              | Inter-process communication                |
+|   | 0x10001       | ROS              | Read Only Syscalls                         |
 
 ### Hardware Access
 
