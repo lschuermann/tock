@@ -418,7 +418,16 @@ pub unsafe fn main() {
         &litex_sim,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
-        None,
+        None::<
+            &kernel::ros::ROSDriver<
+                litex_vexriscv::timer::LiteXAlarm<
+                    'static,
+                    'static,
+                    socc::SoCRegisterFmt,
+                    socc::ClockFrequency,
+                >,
+            >,
+        >,
         scheduler,
         &main_loop_cap,
     );

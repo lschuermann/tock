@@ -253,7 +253,7 @@ pub unsafe fn main() {
         &hifive1,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
-        None,
+        None::<&kernel::ros::ROSDriver<sifive::clint::Clint>>,
         scheduler,
         &main_loop_cap,
     );

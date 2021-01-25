@@ -21,6 +21,7 @@ use crate::debug;
 use crate::driver::CommandReturn;
 use crate::errorcode::ErrorCode;
 use crate::grant::Grant;
+use crate::hil::time::Time;
 use crate::ipc;
 use crate::memop;
 use crate::platform::mpu::MPU;
@@ -458,12 +459,12 @@ impl Kernel {
     ///
     /// Most of the behavior of this loop is controlled by the `Scheduler`
     /// implementation in use.
-    pub fn kernel_loop<P: Platform, C: Chip, SC: Scheduler<C>, const NUM_PROCS: usize>(
+    pub fn kernel_loop<P: Platform, C: Chip, SC: Scheduler<C>, T: Time, const NUM_PROCS: usize>(
         &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC<NUM_PROCS>>,
-        ros: Option<&crate::ros::ROSDriver>,
+        ros: Option<&crate::ros::ROSDriver<T>>,
         scheduler: &SC,
         _capability: &dyn capabilities::MainLoopCapability,
     ) -> ! {
@@ -557,14 +558,14 @@ impl Kernel {
     /// cooperatively). Notably, time spent in this function by the kernel,
     /// executing system calls or merely setting up the switch to/from
     /// userspace, is charged to the process.
-    fn do_process<P: Platform, C: Chip, S: Scheduler<C>, const NUM_PROCS: usize>(
+    fn do_process<P: Platform, C: Chip, S: Scheduler<C>, T: Time, const NUM_PROCS: usize>(
         &self,
         platform: &P,
         chip: &C,
         scheduler: &S,
         process: &dyn process::Process,
         ipc: Option<&crate::ipc::IPC<NUM_PROCS>>,
-        ros: Option<&crate::ros::ROSDriver>,
+        ros: Option<&crate::ros::ROSDriver<T>>,
         timeslice_us: Option<u32>,
     ) -> (StoppedExecutingReason, Option<u32>) {
         // We must use a dummy scheduler timer if the process should be executed
@@ -628,7 +629,7 @@ impl Kernel {
                     // generate an interrupt when the timeslice has expired. The
                     // underlying timer is not affected.
                     ros.map(|r| {
-                        r.update_values(process.processid());
+                        r.update_values(process.processid(), process.pending_tasks());
                     });
                     process.setup_mpu();
                     chip.mpu().enable_app_mpu();

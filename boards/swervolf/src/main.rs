@@ -199,7 +199,7 @@ pub unsafe fn main() {
         &swervolf,
         chip,
         None::<&kernel::ipc::IPC<NUM_PROCS>>,
-        None,
+        None::<&kernel::ros::ROSDriver<swervolf_eh1::syscon::SysCon>>,
         scheduler,
         &main_loop_cap,
     );
