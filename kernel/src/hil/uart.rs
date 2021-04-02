@@ -80,12 +80,13 @@ pub trait Transmit<'a> {
     fn set_transmit_client(&self, client: &'a dyn TransmitClient);
 
     /// Transmit a buffer of data. On completion, `transmitted_buffer`
-    /// in the `TransmitClient` will be called.  If the `Result<(), ErrorCode>`
-    /// of `transmit`'s return tuple is SUCCESS, the `Option` will be
-    /// `None` and the struct will issue a `transmitted_buffer`
-    /// callback in the future. If the value of the `Result<(), ErrorCode>` is
-    /// not SUCCESS, then the `tx_buffer` argument is returned in the
-    /// `Option`. Other valid `Result<(), ErrorCode>` values are:
+    /// in the `TransmitClient` will be called.  If the return value
+    /// of this function is `Ok(())`, the device will issue a
+    /// `transmitted_buffer` callback in the future. If the
+    /// `Err((ErrorCode, &'static mut [u8]))` variant is returned, the
+    /// operation failed. The passed buffer, along with an appropriate
+    /// [`ErrorCode`] is returned. Valid [`ErrorCode`] values are:
+    ///
     ///  - EOFF: The underlying hardware is not available, perhaps because
     ///          it has not been initialized or in the case of a shared
     ///          hardware USART controller because it is set up for SPI.
@@ -106,7 +107,7 @@ pub trait Transmit<'a> {
         &self,
         tx_buffer: &'static mut [u8],
         tx_len: usize,
-    ) -> (Result<(), ErrorCode>, Option<&'static mut [u8]>);
+    ) -> Result<(), (ErrorCode, &'static mut [u8])>;
 
     /// Transmit a single word of data asynchronously. The word length is
     /// determined by the UART configuration: it can be 6, 7, 8, or 9 bits long.
@@ -154,18 +155,20 @@ pub trait Receive<'a> {
     fn set_receive_client(&self, client: &'a dyn ReceiveClient);
 
     /// Receive `rx_len` bytes into `rx_buffer`, making a callback to
-    /// the `ReceiveClient` when complete.  If the `Result<(), ErrorCode>` of
-    /// `receive_buffer`'s return tuple is SUCCESS, the `Option` will
-    /// be `None` and the struct will issue a `received_buffer`
-    /// callback in the future. If the value of the `Result<(), ErrorCode>` is
-    /// not SUCCESS, then the `rx_buffer` argument is returned in the
-    /// `Option`. Other valid return values are:
+    /// the `ReceiveClient` when complete.  If this function returns
+    /// `Ok(())`, the device will issue a `received_buffer` callback
+    /// in the future. If the `Err((ErrorCode, &'static mut [u8]))`
+    /// variant is returned, the operation failed. The passed buffer,
+    /// along with an appropriate [`ErrorCode`] is returned. Valid
+    /// [`ErrorCode`] values are:
+    ///
     ///  - EOFF: The underlying hardware is not available, perhaps because
     ///          it has not been initialized or in the case of a shared
     ///          hardware USART controller because it is set up for SPI.
     ///  - EBUSY: the UART is already receiving and has not made a
     ///           reception `complete` callback yet.
     ///  - ESIZE : `rx_len` is larger than the passed slice.
+    ///
     /// Each byte in `rx_buffer` is a UART transfer word of 8 or fewer
     /// bits.  The width is determined by the UART
     /// configuration. Clients that need to transfer 9-bit words
@@ -176,7 +179,7 @@ pub trait Receive<'a> {
         &self,
         rx_buffer: &'static mut [u8],
         rx_len: usize,
-    ) -> (Result<(), ErrorCode>, Option<&'static mut [u8]>);
+    ) -> Result<(), (ErrorCode, &'static mut [u8])>;
 
     /// Receive a single word of data. The word length is determined
     /// by the UART configuration: it can be 6, 7, 8, or 9 bits long.
@@ -318,5 +321,5 @@ pub trait ReceiveAdvanced<'a>: Receive<'a> {
         rx_buffer: &'static mut [u8],
         rx_len: usize,
         interbyte_timeout: u8,
-    ) -> (Result<(), ErrorCode>, Option<&'static mut [u8]>);
+    ) -> Result<(), (ErrorCode, &'static mut [u8])>;
 }
