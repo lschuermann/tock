@@ -409,7 +409,11 @@ impl DebugWriter {
 
                 if count != 0 {
                     // Transmit the data in the output buffer.
-                    let (_rval, opt) = self.uart.transmit_buffer(out_buffer, count);
+                    let opt = self
+                        .uart
+                        .transmit_buffer(out_buffer, count)
+                        .err()
+                        .map(|(_errcode, buf)| buf);
                     self.output_buffer.put(opt);
                 }
             }

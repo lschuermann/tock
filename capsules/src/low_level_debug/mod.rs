@@ -68,7 +68,11 @@ impl<'u, U: Transmit<'u>> TransmitClient for LowLevelDebug<'u, U> {
         if self.grant_failed.take() {
             const MESSAGE: &[u8] = b"LowLevelDebug: grant init failed\n";
             tx_buffer.copy_from_slice(MESSAGE);
-            let (_, returned_buffer) = self.uart.transmit_buffer(tx_buffer, MESSAGE.len());
+            let returned_buffer = self
+                .uart
+                .transmit_buffer(tx_buffer, MESSAGE.len())
+                .err()
+                .map(|(_errcode, buf)| buf);
             self.buffer.set(returned_buffer);
             return;
         }
@@ -137,7 +141,11 @@ impl<'u, U: Transmit<'u>> LowLevelDebug<'u, U> {
         let msg_len = fmt::format_entry(app_num, entry, buffer);
         // The uart's error message is ignored because we cannot do anything if
         // it fails anyway.
-        let (_, returned_buffer) = self.uart.transmit_buffer(buffer, msg_len);
+        let returned_buffer = self
+            .uart
+            .transmit_buffer(buffer, msg_len)
+            .err()
+            .map(|(_errcode, buf)| buf);
         self.buffer.set(returned_buffer);
     }
 }
