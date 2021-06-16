@@ -4,7 +4,10 @@
 use core::cell::Cell;
 use core::mem;
 use kernel::hil::time::{self, Alarm, Frequency, Ticks, Ticks32};
-use kernel::{CommandReturn, Driver, ErrorCode, Grant, ProcessId, Upcall};
+use kernel::ros::ROSDriver;
+use kernel::{
+    CommandReturn, Driver, ErrorCode, Grant, ProcessId, ReadWrite, ReadWriteAppSlice, Upcall,
+};
 
 /// Syscall driver number.
 use crate::driver;
@@ -16,10 +19,16 @@ enum Expiration {
     Enabled { reference: u32, dt: u32 },
 }
 
-#[derive(Copy, Clone)]
 pub struct AlarmData {
     expiration: Expiration,
     callback: Upcall,
+
+    // This capsule provides a ROS-compatible mechanism to communicate
+    // the current clock ticks proactively to userspace. If this
+    // mechanism is enabled, this contains the corresponding userspace
+    // memory region to write the ticks to.
+    ros_region: ReadWriteAppSlice,
+    ros_count: Cell<u32>,
 }
 
 impl Default for AlarmData {
@@ -27,6 +36,8 @@ impl Default for AlarmData {
         AlarmData {
             expiration: Expiration::Disabled,
             callback: Upcall::default(),
+            ros_region: ReadWriteAppSlice::default(),
+            ros_count: Cell::new(0),
         }
     }
 }
@@ -36,6 +47,14 @@ pub struct AlarmDriver<'a, A: Alarm<'a>> {
     num_armed: Cell<usize>,
     app_alarms: Grant<AlarmData>,
     next_alarm: Cell<Expiration>,
+
+    // If the ROS mechanism is enabled, this variable is set to true
+    // as soon as the first process is scheduled for the first
+    // time. This variable determines whether a read-write allow of
+    // the `ros_region` is supported and thus whether the AlarmDriver
+    // can supply the current ticks to userspace through the ROS
+    // mechanism
+    ros_enabled: Cell<bool>,
 }
 
 impl<'a, A: Alarm<'a>> AlarmDriver<'a, A> {
@@ -45,6 +64,7 @@ impl<'a, A: Alarm<'a>> AlarmDriver<'a, A> {
             num_armed: Cell::new(0),
             app_alarms: grant,
             next_alarm: Cell::new(Expiration::Disabled),
+            ros_enabled: Cell::new(false),
         }
     }
 
@@ -170,6 +190,44 @@ impl<'a, A: Alarm<'a>> Driver for AlarmDriver<'a, A> {
             Err((callback, e))
         } else {
             Ok(callback)
+        }
+    }
+
+    /// Allow an ROS memory region, if supported
+    ///
+    /// ### `allow_num`
+    ///
+    /// - `0`: allow the ROS mechanism memory region
+    fn allow_readwrite(
+        &self,
+        process_id: ProcessId,
+        allow_num: usize,
+        mut slice: ReadWriteAppSlice,
+    ) -> Result<ReadWriteAppSlice, (ReadWriteAppSlice, ErrorCode)> {
+        match allow_num {
+            0 => {
+                if self.ros_enabled.get() {
+                    // ROS is enabled
+                    let res = self
+                        .app_alarms
+                        .enter(process_id, |grant| {
+                            mem::swap(&mut grant.ros_region, &mut slice);
+                        })
+                        .map_err(|e| e.into());
+
+                    match res {
+                        Ok(()) => Ok(slice),
+                        Err(e) => Err((slice, e)),
+                    }
+                } else {
+                    // ROS is not enabled, as otherwise
+                    // ROSDriver::update_values would've been called
+                    // at least once when this process was initially
+                    // scheduled
+                    Err((slice, ErrorCode::NODEVICE))
+                }
+            }
+            _ => Err((slice, ErrorCode::NOSUPPORT)),
         }
     }
 
@@ -303,5 +361,27 @@ impl<'a, A: Alarm<'a>> time::AlarmClient for AlarmDriver<'a, A> {
         } else {
             self.reset_active_alarm();
         }
+    }
+}
+
+impl<'a, A: Alarm<'a>> ROSDriver for AlarmDriver<'a, A> {
+    fn update_values(&self, process_id: ProcessId) {
+        // Mark that the ROS mechanism is enabled
+        self.ros_enabled.set(true);
+
+        // Check if the current process has an ROS region allowed. In
+        // that case, update the values accordingly.
+        let _ = self.app_alarms.enter(process_id, |grant| {
+            let count = grant.ros_count.get();
+            grant.ros_region.mut_map_or((), |buf| {
+                if buf.len() >= 12 {
+                    let now = self.alarm.now().into_usize() as u64;
+                    let b = buf.as_mut();
+                    b[0..4].copy_from_slice(&count.to_le_bytes());
+                    b[4..12].copy_from_slice(&now.to_le_bytes());
+                }
+            });
+            grant.ros_count.set(count.wrapping_add(1));
+        });
     }
 }
