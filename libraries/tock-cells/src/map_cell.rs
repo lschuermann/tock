@@ -140,11 +140,19 @@ impl<T> MapCell<T> {
         }
     }
 
-    pub fn map_or<F, R>(&self, default: R, closure: F) -> R
+    pub fn map_or<F, R>(&self, default: R, present_closure: F) -> R
     where
         F: FnOnce(&mut T) -> R,
     {
-        self.map(closure).unwrap_or(default)
+        self.map(present_closure).unwrap_or(default)
+    }
+
+    pub fn map_or_else<D, F, R>(&self, present_closure: F, else_closure: D) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+        D: FnOnce() -> R,
+    {
+        self.map(present_closure).unwrap_or_else(else_closure)
     }
 
     /// Behaves the same as `map`, except the closure is allowed to return
