@@ -223,7 +223,9 @@ impl<const NUM_PROCS: usize, const NUM_UPCALLS: usize> Driver for IPC<NUM_PROCS,
                             CommandReturn::failure(ErrorCode::INVAL),
                             otherapp,
                             |target| {
-                                let ret = target.enqueue_task(process::Task::IPC((appid, cb_type)));
+                                let ret = target
+                                    .enqueue_task(process::Task::IPC((appid, cb_type)))
+                                    .is_ok();
                                 match ret {
                                     true => CommandReturn::success(),
                                     false => CommandReturn::failure(ErrorCode::FAIL),
@@ -246,7 +248,9 @@ impl<const NUM_PROCS: usize, const NUM_UPCALLS: usize> Driver for IPC<NUM_PROCS,
                             CommandReturn::failure(ErrorCode::INVAL),
                             otherapp,
                             |target| {
-                                let ret = target.enqueue_task(process::Task::IPC((appid, cb_type)));
+                                let ret = target
+                                    .enqueue_task(process::Task::IPC((appid, cb_type)))
+                                    .is_ok();
                                 match ret {
                                     true => CommandReturn::success(),
                                     false => CommandReturn::failure(ErrorCode::FAIL),
