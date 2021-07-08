@@ -4,6 +4,7 @@ use core::ptr::NonNull;
 
 use crate::config;
 use crate::debug;
+use crate::grant::UpcallError;
 use crate::process;
 use crate::process::ProcessId;
 use crate::syscall::SyscallReturn;
@@ -78,23 +79,46 @@ impl Upcall {
         r0: usize,
         r1: usize,
         r2: usize,
-    ) -> bool {
-        let res = self.fn_ptr.map_or(false, |fp| {
-            process
-                .enqueue_task(process::Task::FunctionCall(process::FunctionCall {
-                    source: process::FunctionCallSource::Driver(self.upcall_id),
-                    argument0: r0,
-                    argument1: r1,
-                    argument2: r2,
-                    argument3: self.appdata,
-                    pc: fp.as_ptr() as usize,
-                }))
-                .is_ok()
-        });
+    ) -> Result<(), UpcallError> {
+        let res = self.fn_ptr.map_or(
+            Ok(()), // A null-Upcall is treated as being delivered to
+            // the process and ignored
+            |fp| {
+                let enqueue_res =
+                    process.enqueue_task(process::Task::FunctionCall(process::FunctionCall {
+                        source: process::FunctionCallSource::Driver(self.upcall_id),
+                        argument0: r0,
+                        argument1: r1,
+                        argument2: r2,
+                        argument3: self.appdata,
+                        pc: fp.as_ptr() as usize,
+                    }));
+
+                match enqueue_res {
+                    Ok(()) => Ok(()),
+                    Err(ErrorCode::NODEVICE) => {
+                        // There should be no code path to schedule an
+                        // Upcall on a process that is no longer
+                        // alive. Indicate a kernel-internal error.
+                        Err(UpcallError::KernelError)
+                    }
+                    Err(ErrorCode::NOMEM) => {
+                        // No space left in the process' task queue.
+                        Err(UpcallError::QueueFull)
+                    }
+                    Err(_) => {
+                        // All other errors returned by
+                        // `Process::enqueue_task` must be treated as
+                        // kernel-internal errors
+                        Err(UpcallError::KernelError)
+                    }
+                }
+            },
+        );
 
         if config::CONFIG.trace_syscalls {
             debug!(
-                "[{:?}] schedule[{:#x}:{}] @{:#x}({:#x}, {:#x}, {:#x}, {:#x}) = {}",
+                "[{:?}] schedule[{:#x}:{}] @{:#x}({:#x}, {:#x}, {:#x}, {:#x}) = {:?}",
                 self.process_id,
                 self.upcall_id.driver_num,
                 self.upcall_id.subscribe_num,

@@ -170,6 +170,46 @@ impl<'a, T: 'a + ?Sized> DerefMut for GrantData<'a, T> {
     }
 }
 
+/// Errors which can occur when scheduling a process Upcall
+///
+/// Scheduling a null-Upcall (which will not be delivered to a
+/// process) is deliberately not an error, given that a null-Upcall is
+/// a well-defined Upcall to be set by a process. It behaves
+/// essentially the same as if the process would set a proper Upcall,
+/// and would ignore all invocations, with the benefit that no task is
+/// inserted in the process' task queue.
+#[derive(Copy, Clone, Debug)]
+pub enum UpcallError {
+    /// The passed `subscribe_num` exceeds the number of Upcalls
+    /// available for this process.
+    ///
+    /// For a [`Grant`] with `n` `NUM_UPCALLS`, this error is returned
+    /// when `GrantUpcallTable::schedule_upcall` is invoked with
+    /// `subscribe_num >= n`.
+    ///
+    /// No Upcall has been scheduled, the call to
+    /// `GrantUpcallTable::schedule_upcall` had no observable effects.
+    ///
+    InvalidSubscribeNum,
+    /// The process' task queue is full.
+    ///
+    /// This error can occur when too many tasks (for example,
+    /// Upcalls) have been scheduled for a process, without that
+    /// process yielding or having a chance to resume execution.
+    ///
+    /// No Upcall has been scheduled, the call to
+    /// `GrantUpcallTable::schedule_upcall` had no observable effects.
+    QueueFull,
+    /// A kernel-internal invariant has been violated.
+    ///
+    /// This error should never happen. It can be returned if the
+    /// process is inactive (which should be caught by
+    /// [`Grant::enter`]) or `process.tasks` was taken.
+    ///
+    /// These cases cannot be reasonably handled.
+    KernelError,
+}
+
 /// This GrantUpcallTable object provides a handle to access Upcalls stored on
 /// behalf of a particular grant/driver.
 ///
@@ -215,11 +255,17 @@ impl<'a> GrantUpcallTable<'a> {
     /// identified by the `subscribe_num`, which must match the subscribe number
     /// used when the upcall was originally subscribed by a process.
     /// `subscribe_num`s are indexed starting at zero.
-    pub fn schedule_upcall(&self, subscribe_num: usize, r0: usize, r1: usize, r2: usize) -> bool {
+    pub fn schedule_upcall(
+        &self,
+        subscribe_num: usize,
+        r0: usize,
+        r1: usize,
+        r2: usize,
+    ) -> Result<(), UpcallError> {
         // Implement `self.upcalls[subscribe_num]` without a chance of a panic.
-        self.upcalls
-            .get(subscribe_num)
-            .map_or(false, |saved_upcall| {
+        self.upcalls.get(subscribe_num).map_or(
+            Err(UpcallError::InvalidSubscribeNum),
+            |saved_upcall| {
                 // We can create an `Upcall` object based on what is stored in
                 // the process grant and use that to add the upcall to the
                 // pending array for the process.
@@ -233,7 +279,8 @@ impl<'a> GrantUpcallTable<'a> {
                     saved_upcall.fn_ptr,
                 );
                 upcall.schedule(self.process, r0, r1, r2)
-            })
+            },
+        )
     }
 }
 
