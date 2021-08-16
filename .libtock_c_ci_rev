@@ -1,0 +1,8 @@
+# Pins a libtock-c revision for Tock CI tests. This makes it easy to
+# update the targeted libtock-c revision for all of Tock's CI jobs.
+#
+# This file is a valid shell file and can be sourced to obtain the
+# LIBTOCK_C_CI_REV environment variable.
+
+# libtock-c of Aug 25, 2021, 6:37 PM GMT+2
+LIBTOCK_C_CI_REV=17601d28fa3652a124abf373c86143c2532d3f3c
