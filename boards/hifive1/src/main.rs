@@ -54,10 +54,10 @@ struct HiFive1 {
         3,
     >,
     console: &'static capsules::console::Console<'static>,
-    lldb: &'static capsules::low_level_debug::LowLevelDebug<
-        'static,
-        capsules::virtual_uart::UartDevice<'static>,
-    >,
+    // lldb: &'static capsules::low_level_debug::LowLevelDebug<
+    //     'static,
+    //     capsules::virtual_uart::UartDevice<'static>,
+    // >,
     alarm: &'static capsules::alarm::AlarmDriver<
         'static,
         VirtualMuxAlarm<'static, sifive::clint::Clint<'static>>,
@@ -77,7 +77,7 @@ impl SyscallDriverLookup for HiFive1 {
             capsules::led::DRIVER_NUM => f(Some(self.led)),
             capsules::console::DRIVER_NUM => f(Some(self.console)),
             capsules::alarm::DRIVER_NUM => f(Some(self.alarm)),
-            capsules::low_level_debug::DRIVER_NUM => f(Some(self.lldb)),
+            // capsules::low_level_debug::DRIVER_NUM => f(Some(self.lldb)),
             _ => f(None),
         }
     }
@@ -221,9 +221,9 @@ pub unsafe fn main() {
     );
     CHIP = Some(chip);
 
-    let process_printer =
-        components::process_printer::ProcessPrinterTextComponent::new().finalize(());
-    PROCESS_PRINTER = Some(process_printer);
+    // let process_printer =
+    //     components::process_printer::ProcessPrinterTextComponent::new().finalize(());
+    // PROCESS_PRINTER = Some(process_printer);
 
     // Need to enable all interrupts for Tock Kernel
     chip.enable_plic_interrupts();
@@ -244,12 +244,12 @@ pub unsafe fn main() {
     // Create the debugger object that handles calls to `debug!()`.
     components::debug_writer::DebugWriterComponent::new(uart_mux).finalize(());
 
-    let lldb = components::lldb::LowLevelDebugComponent::new(
-        board_kernel,
-        capsules::low_level_debug::DRIVER_NUM,
-        uart_mux,
-    )
-    .finalize(());
+    // let lldb = components::lldb::LowLevelDebugComponent::new(
+    //     board_kernel,
+    //     capsules::low_level_debug::DRIVER_NUM,
+    //     uart_mux,
+    // )
+    // .finalize(());
 
     // Need two debug!() calls to actually test with QEMU. QEMU seems to have
     // a much larger UART TX buffer (or it transmits faster).
@@ -279,7 +279,7 @@ pub unsafe fn main() {
     let hifive1 = HiFive1 {
         console: console,
         alarm: alarm,
-        lldb: lldb,
+        //lldb: lldb,
         led,
         scheduler,
         scheduler_timer,
