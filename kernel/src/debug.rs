@@ -64,6 +64,7 @@ use crate::utilities::binary_write::BinaryToWriteWrapper;
 use crate::utilities::cells::NumericCellExt;
 use crate::utilities::cells::{MapCell, TakeCell};
 use crate::ErrorCode;
+use crate::dmabuffer::{MutableDMABuffer, ReadableDMABuffer};
 
 /// This trait is similar to std::io::Write in that it takes bytes instead of a string (contrary to
 /// core::fmt::Write), but io::Write isn't available in no_std (due to std::io::Error not being
@@ -373,7 +374,7 @@ pub struct DebugWriter {
     // What provides the actual writing mechanism.
     uart: &'static dyn hil::uart::Transmit<'static>,
     // The buffer that is passed to the writing mechanism.
-    output_buffer: TakeCell<'static, [u8]>,
+    output_buffer: &'static MutableDMABuffer,
     // An internal buffer that is used to hold debug!() calls as they come in.
     internal_buffer: TakeCell<'static, RingBuffer<'static, u8>>,
     // Number of debug!() calls.
@@ -408,12 +409,12 @@ impl DebugWriterWrapper {
 impl DebugWriter {
     pub fn new(
         uart: &'static dyn hil::uart::Transmit,
-        out_buffer: &'static mut [u8],
+        out_buffer: &'static MutableDMABuffer,
         internal_buffer: &'static mut RingBuffer<'static, u8>,
     ) -> DebugWriter {
         DebugWriter {
             uart: uart,
-            output_buffer: TakeCell::new(out_buffer),
+            output_buffer: out_buffer,
             internal_buffer: TakeCell::new(internal_buffer),
             count: Cell::new(0), // how many debug! calls
         }
@@ -448,15 +449,18 @@ impl DebugWriter {
                     }
                 }
 
+		// Now that the data is copied, put the buffer back. Guaranteed
+		// to succeed, given we've just been able to take the buffer
+		// out.
+		assert!(self.output_buffer.set(out_buffer));
+
                 if count != 0 {
                     // Transmit the data in the output buffer.
-                    if let Err((_err, buf)) = self.uart.transmit_buffer(out_buffer, count) {
-                        self.output_buffer.put(Some(buf));
-                    } else {
-                        self.output_buffer.put(None);
-                    }
+                    let _ = self.uart.transmit_buffer(self.output_buffer, count);
                 }
-            }
+            } else {
+		assert!(self.output_buffer.locked());
+	    }
         });
     }
 
@@ -468,13 +472,10 @@ impl DebugWriter {
 impl hil::uart::TransmitClient for DebugWriter {
     fn transmitted_buffer(
         &self,
-        buffer: &'static mut [u8],
+        _buffer: &'static dyn ReadableDMABuffer,
         _tx_len: usize,
         _rcode: core::result::Result<(), ErrorCode>,
     ) {
-        // Replace this buffer since we are done with it.
-        self.output_buffer.replace(buffer);
-
         if self.internal_buffer.map_or(false, |buf| buf.has_elements()) {
             // Buffer not empty, go around again
             self.publish_bytes();

@@ -25,6 +25,7 @@ use kernel::component::Component;
 use kernel::hil;
 use kernel::hil::uart;
 use kernel::static_init;
+use kernel::dmabuffer::MutableDMABuffer;
 
 // The sum of the output_buf and internal_buf is set to a multiple of 1024 bytes in order to avoid excessive
 // padding between kernel memory and application memory (which often needs to be aligned to at
@@ -61,13 +62,20 @@ impl Component for DebugWriterComponent {
         );
         let (output_buf, internal_buf) = buf.split_at_mut(DEBUG_BUFFER_SPLIT);
 
+	// Create a MutableDMABuffer for providing the buffer to HW
+	let output_dma_buf = static_init!(
+	    MutableDMABuffer,
+	    MutableDMABuffer::new(),
+	);
+	output_dma_buf.set(output_buf);
+
         // Create virtual device for kernel debug.
         let debugger_uart = static_init!(UartDevice, UartDevice::new(self.uart_mux, false));
         debugger_uart.setup();
         let ring_buffer = static_init!(RingBuffer<'static, u8>, RingBuffer::new(internal_buf));
         let debugger = static_init!(
             kernel::debug::DebugWriter,
-            kernel::debug::DebugWriter::new(debugger_uart, output_buf, ring_buffer)
+            kernel::debug::DebugWriter::new(debugger_uart, output_dma_buf, ring_buffer)
         );
         hil::uart::Transmit::set_transmit_client(debugger_uart, debugger);
 
@@ -102,11 +110,18 @@ impl<U: uart::Uart<'static> + uart::Transmit<'static> + 'static> Component
         );
         let (output_buf, internal_buf) = buf.split_at_mut(DEBUG_BUFFER_SPLIT);
 
+	// Create a MutableDMABuffer for providing the buffer to HW
+	let output_dma_buf = static_init!(
+	    MutableDMABuffer,
+	    MutableDMABuffer::new(),
+	);
+	output_dma_buf.set(output_buf);
+
         // Create virtual device for kernel debug.
         let ring_buffer = static_init!(RingBuffer<'static, u8>, RingBuffer::new(internal_buf));
         let debugger = static_init!(
             kernel::debug::DebugWriter,
-            kernel::debug::DebugWriter::new(self.uart, output_buf, ring_buffer)
+            kernel::debug::DebugWriter::new(self.uart, output_dma_buf, ring_buffer)
         );
         hil::uart::Transmit::set_transmit_client(self.uart, debugger);
 
