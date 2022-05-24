@@ -51,6 +51,7 @@ use kernel::dynamic_deferred_call::{
 use kernel::hil::uart;
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::ErrorCode;
+use kernel::dmabuffer::ReadableDMABuffer;
 
 const RX_BUF_LEN: usize = 64;
 pub static mut RX_BUF: [u8; RX_BUF_LEN] = [0; RX_BUF_LEN];
@@ -69,10 +70,12 @@ pub struct MuxUart<'a> {
 impl<'a> uart::TransmitClient for MuxUart<'a> {
     fn transmitted_buffer(
         &self,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: &'static dyn ReadableDMABuffer,
         tx_len: usize,
         rcode: Result<(), ErrorCode>,
     ) {
+	assert!(!tx_buffer.locked());
+
         self.inflight.map(move |device| {
             self.inflight.clear();
             device.transmitted_buffer(tx_buffer, tx_len, rcode);
@@ -226,28 +229,26 @@ impl<'a> MuxUart<'a> {
         if self.inflight.is_none() {
             let mnode = self.devices.iter().find(|node| node.operation.is_some());
             mnode.map(|node| {
-                node.tx_buffer.take().map(|buf| {
-                    node.operation.map(move |op| match op {
-                        Operation::Transmit { len } => {
-                            let _ = self.uart.transmit_buffer(buf, *len).map_err(
-                                move |(ecode, buf)| {
-                                    node.tx_client.map(move |client| {
-                                        node.transmitting.set(false);
-                                        client.transmitted_buffer(buf, 0, Err(ecode));
-                                    });
-                                },
-                            );
-                        }
-                        Operation::TransmitWord { word } => {
-                            let rcode = self.uart.transmit_word(*word);
-                            if rcode != Ok(()) {
-                                node.tx_client.map(|client| {
+                node.operation.map(move |op| match op {
+                    Operation::Transmit { len } => {
+                        let _ = self.uart.transmit_buffer(node.tx_buffer.get(), *len).map_err(
+                            move |ecode| {
+                                node.tx_client.map(move |client| {
                                     node.transmitting.set(false);
-                                    client.transmitted_word(rcode);
+                                    client.transmitted_buffer(node.tx_buffer.get(), 0, Err(ecode));
                                 });
-                            }
+                            },
+                        );
+                    }
+                    Operation::TransmitWord { word } => {
+                        let rcode = self.uart.transmit_word(*word);
+                        if rcode != Ok(()) {
+                            node.tx_client.map(|client| {
+                                node.transmitting.set(false);
+                                client.transmitted_word(rcode);
+                            });
                         }
-                    });
+                    }
                 });
                 node.operation.clear();
                 self.inflight.set(node);
@@ -327,7 +328,7 @@ pub struct UartDevice<'a> {
     state: Cell<UartDeviceReceiveState>,
     mux: &'a MuxUart<'a>,
     receiver: bool, // Whether or not to pass this UartDevice incoming messages.
-    tx_buffer: TakeCell<'static, [u8]>,
+    tx_buffer: Cell<&'static dyn ReadableDMABuffer>,
     transmitting: Cell<bool>,
     rx_buffer: TakeCell<'static, [u8]>,
     rx_position: Cell<usize>,
@@ -344,7 +345,7 @@ impl<'a> UartDevice<'a> {
             state: Cell::new(UartDeviceReceiveState::Idle),
             mux: mux,
             receiver: receiver,
-            tx_buffer: TakeCell::empty(),
+            tx_buffer: Cell::new(&()),
             transmitting: Cell::new(false),
             rx_buffer: TakeCell::empty(),
             rx_position: Cell::new(0),
@@ -365,7 +366,7 @@ impl<'a> UartDevice<'a> {
 impl<'a> uart::TransmitClient for UartDevice<'a> {
     fn transmitted_buffer(
         &self,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: &'static dyn ReadableDMABuffer,
         tx_len: usize,
         rcode: Result<(), ErrorCode>,
     ) {
@@ -415,13 +416,14 @@ impl<'a> uart::Transmit<'a> for UartDevice<'a> {
     /// Transmit data.
     fn transmit_buffer(
         &self,
-        tx_data: &'static mut [u8],
+        tx_data: &'static dyn ReadableDMABuffer,
         tx_len: usize,
-    ) -> Result<(), (ErrorCode, &'static mut [u8])> {
+    ) -> Result<(), ErrorCode> {
         if self.transmitting.get() {
-            Err((ErrorCode::BUSY, tx_data))
+            Err(ErrorCode::BUSY)
         } else {
-            self.tx_buffer.replace(tx_data);
+	    assert!(!tx_data.locked());
+            self.tx_buffer.set(tx_data);
             self.transmitting.set(true);
             self.operation.set(Operation::Transmit { len: tx_len });
             self.mux.do_next_op_async();

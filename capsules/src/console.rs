@@ -43,6 +43,7 @@ use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::{ErrorCode, ProcessId};
+use kernel::dmabuffer::{MutableDMABuffer, ReadableDMABuffer};
 
 /// Syscall driver number.
 use crate::driver;
@@ -89,7 +90,7 @@ pub struct Console<'a> {
         AllowRwCount<{ rw_allow::COUNT }>,
     >,
     tx_in_progress: OptionalCell<ProcessId>,
-    tx_buffer: TakeCell<'static, [u8]>,
+    tx_buffer: &'static MutableDMABuffer,
     rx_in_progress: OptionalCell<ProcessId>,
     rx_buffer: TakeCell<'static, [u8]>,
 }
@@ -97,7 +98,7 @@ pub struct Console<'a> {
 impl<'a> Console<'a> {
     pub fn new(
         uart: &'a dyn uart::UartData<'a>,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: &'static MutableDMABuffer,
         rx_buffer: &'static mut [u8],
         grant: Grant<
             App,
@@ -110,7 +111,7 @@ impl<'a> Console<'a> {
             uart: uart,
             apps: grant,
             tx_in_progress: OptionalCell::empty(),
-            tx_buffer: TakeCell::new(tx_buffer),
+            tx_buffer,
             rx_in_progress: OptionalCell::empty(),
             rx_buffer: TakeCell::new(rx_buffer),
         }
@@ -189,7 +190,9 @@ impl<'a> Console<'a> {
                     })
                     .unwrap_or(0);
                 app.write_remaining -= transaction_len;
-                let _ = self.uart.transmit_buffer(buffer, transaction_len);
+
+		assert!(self.tx_buffer.set(buffer));
+                let _ = self.uart.transmit_buffer(self.tx_buffer, transaction_len);
             });
         } else {
             app.pending_write = true;
@@ -301,13 +304,12 @@ impl SyscallDriver for Console<'_> {
 impl uart::TransmitClient for Console<'_> {
     fn transmitted_buffer(
         &self,
-        buffer: &'static mut [u8],
+        _buffer: &'static dyn ReadableDMABuffer,
         _tx_len: usize,
         _rcode: Result<(), ErrorCode>,
     ) {
         // Either print more from the AppSlice or send a callback to the
         // application.
-        self.tx_buffer.replace(buffer);
         self.tx_in_progress.take().map(|appid| {
             self.apps.enter(appid, |app, kernel_data| {
                 match self.send_continue(appid, app, kernel_data) {

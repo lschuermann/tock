@@ -29,6 +29,7 @@ use kernel::hil;
 use kernel::hil::uart;
 use kernel::static_init;
 use kernel::utilities::static_init::StaticUninitializedBuffer;
+use kernel::dmabuffer::MutableDMABuffer;
 
 use capsules::console::DEFAULT_BUF_SIZE;
 
@@ -50,7 +51,7 @@ impl UartMuxComponent {
             deferred_caller,
         }
     }
-}
+}// 
 
 impl Component for UartMuxComponent {
     type StaticInput = ();
@@ -126,6 +127,11 @@ impl Component for ConsoleComponent {
         let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
 
         let write_buffer = s.0.initialize([0; DEFAULT_BUF_SIZE]);
+	let write_dma_buffer = static_init!(
+	    MutableDMABuffer,
+	    MutableDMABuffer::new(),
+	);
+	write_dma_buffer.set(write_buffer);
 
         let read_buffer = s.1.initialize([0; DEFAULT_BUF_SIZE]);
 
@@ -134,7 +140,7 @@ impl Component for ConsoleComponent {
 
         let console = s.3.initialize(console::Console::new(
             console_uart,
-            write_buffer,
+            write_dma_buffer,
             read_buffer,
             self.board_kernel.create_grant(self.driver_num, &grant_cap),
         ));
