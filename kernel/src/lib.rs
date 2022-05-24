@@ -107,6 +107,7 @@ pub mod ipc;
 pub mod platform;
 pub mod process;
 pub mod processbuffer;
+pub mod dmabuffer;
 pub mod scheduler;
 pub mod storage_permissions;
 pub mod syscall;
