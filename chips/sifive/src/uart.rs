@@ -6,10 +6,10 @@ use kernel::ErrorCode;
 use crate::gpio;
 use kernel::hil;
 use kernel::utilities::cells::OptionalCell;
-use kernel::utilities::cells::TakeCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
+use kernel::dmabuffer::ReadableDMABuffer;
 
 #[repr(C)]
 pub struct UartRegisters {
@@ -65,7 +65,7 @@ pub struct Uart<'a> {
     tx_client: OptionalCell<&'a dyn hil::uart::TransmitClient>,
     rx_client: OptionalCell<&'a dyn hil::uart::ReceiveClient>,
     stop_bits: Cell<hil::uart::StopBits>,
-    buffer: TakeCell<'static, [u8]>,
+    tx_buffer: Cell<&'static dyn ReadableDMABuffer>,
     len: Cell<usize>,
     index: Cell<usize>,
 }
@@ -83,7 +83,7 @@ impl<'a> Uart<'a> {
             tx_client: OptionalCell::empty(),
             rx_client: OptionalCell::empty(),
             stop_bits: Cell::new(hil::uart::StopBits::One),
-            buffer: TakeCell::empty(),
+            tx_buffer: Cell::new(&()),
             len: Cell::new(0),
             index: Cell::new(0),
         }
@@ -134,13 +134,15 @@ impl<'a> Uart<'a> {
 
                 // Signal client write done
                 self.tx_client.map(|client| {
-                    self.buffer.take().map(|buffer| {
-                        client.transmitted_buffer(buffer, self.len.get(), Ok(()));
-                    });
+		    assert!(self.tx_buffer.get().locked());
+		    unsafe { self.tx_buffer.get().unlock() };
+		    assert!(!self.tx_buffer.get().locked());
+                    client.transmitted_buffer(self.tx_buffer.get(), self.len.get(), Ok(()));
                 });
             } else {
                 // More to send. Fill the buffer until it is full.
-                self.buffer.map(|buffer| {
+		assert!(self.tx_buffer.get().locked());
+                assert!(self.tx_buffer.get().map(&mut |buffer| {
                     for i in self.index.get()..self.len.get() {
                         // Write the byte from the array to the tx register.
                         regs.txdata.write(txdata::data.val(buffer[i] as u32));
@@ -151,7 +153,8 @@ impl<'a> Uart<'a> {
                             break;
                         }
                     }
-                });
+                }));
+		assert!(self.tx_buffer.get().locked());
             }
         }
     }
@@ -195,44 +198,56 @@ impl<'a> hil::uart::Transmit<'a> for Uart<'a> {
 
     fn transmit_buffer(
         &self,
-        tx_data: &'static mut [u8],
+        tx_data: &'static dyn ReadableDMABuffer,
         tx_len: usize,
-    ) -> Result<(), (ErrorCode, &'static mut [u8])> {
+    ) -> Result<(), ErrorCode> {
         let regs = self.registers;
 
-        if tx_len == 0 {
-            return Err((ErrorCode::SIZE, tx_data));
-        }
+	// We can set the reference regardless of whether this method will
+	// succeed:
+	self.tx_buffer.set(tx_data);
 
-        // Enable the interrupt so we know when we can keep writing.
-        self.enable_tx_interrupt();
+	assert!(!tx_data.locked());
 
-        // Fill the TX buffer until it reports full.
-        for i in 0..tx_len {
-            // Write the byte from the array to the tx register.
-            regs.txdata.write(txdata::data.val(tx_data[i] as u32));
-            self.index.set(i + 1);
-            // Check if the buffer is full
-            if regs.txdata.is_set(txdata::full) {
-                // If it is, break and wait for the TX interrupt.
-                break;
+	if let Some((_ptr, buf_len)) = tx_data.lock() {
+	    assert!(tx_data.locked());
+            if tx_len == 0 || buf_len < tx_len {
+		unsafe { tx_data.unlock() };
+		return Err(ErrorCode::SIZE);
             }
-        }
 
-        // Save the buffer so we can keep sending it.
-        self.buffer.replace(tx_data);
-        self.len.set(tx_len);
+            // Enable the interrupt so we know when we can keep writing.
+            self.enable_tx_interrupt();
 
-        // Enable transmissions, and wait until the FIFO is empty before getting
-        // an interrupt.
-        let stop_bits = match self.stop_bits.get() {
-            hil::uart::StopBits::One => txctrl::nstop::OneStopBit,
-            hil::uart::StopBits::Two => txctrl::nstop::TwoStopBits,
-        };
-        regs.txctrl
-            .write(txctrl::txen::SET + stop_bits + txctrl::txcnt.val(1));
+            // Fill the TX buffer until it reports full.
+	    assert!(tx_data.map(&mut |buf| {
+		for i in 0..tx_len {
+		    // Write the byte from the array to the tx register.
+		    regs.txdata.write(txdata::data.val(buf[i] as u32));
+		    self.index.set(i + 1);
+		    // Check if the buffer is full
+		    if regs.txdata.is_set(txdata::full) {
+			// If it is, break and wait for the TX interrupt.
+			break;
+		    }
+		}
+	    }));
 
-        Ok(())
+            self.len.set(tx_len);
+
+            // Enable transmissions, and wait until the FIFO is empty before
+            // getting an interrupt.
+            let stop_bits = match self.stop_bits.get() {
+		hil::uart::StopBits::One => txctrl::nstop::OneStopBit,
+		hil::uart::StopBits::Two => txctrl::nstop::TwoStopBits,
+            };
+            regs.txctrl
+		.write(txctrl::txen::SET + stop_bits + txctrl::txcnt.val(1));
+
+            Ok(())
+	} else {
+	    return Err(ErrorCode::NOMEM);
+	}
     }
 
     fn transmit_abort(&self) -> Result<(), ErrorCode> {
