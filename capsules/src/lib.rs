@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
-pub mod test;
+// pub mod test;
 
-#[macro_use]
-pub mod net;
+// #[macro_use]
+// pub mod net;
 
 pub mod adc;
 pub mod adc_microphone;
@@ -36,7 +36,7 @@ pub mod hts221;
 pub mod humidity;
 pub mod i2c_master;
 pub mod i2c_master_slave_driver;
-pub mod ieee802154;
+// pub mod ieee802154;
 pub mod isl29035;
 pub mod kv_driver;
 pub mod kv_store;
@@ -44,7 +44,7 @@ pub mod l3gd20;
 pub mod led;
 pub mod led_matrix;
 pub mod log;
-pub mod low_level_debug;
+// pub mod low_level_debug;
 pub mod lps25hb;
 pub mod lsm303agr;
 pub mod lsm303dlhc;
@@ -58,10 +58,10 @@ pub mod mx25r6435f;
 pub mod ninedof;
 pub mod nonvolatile_storage_driver;
 pub mod nonvolatile_to_pages;
-pub mod nrf51822_serialization;
+// pub mod nrf51822_serialization;
 pub mod panic_button;
 pub mod pca9544a;
-pub mod process_console;
+// pub mod process_console;
 pub mod proximity;
 pub mod public_key_crypto;
 pub mod read_only_state;
@@ -70,7 +70,7 @@ pub mod rf233_const;
 pub mod rng;
 pub mod screen;
 pub mod sdcard;
-pub mod segger_rtt;
+// pub mod segger_rtt;
 pub mod sha;
 pub mod sht3x;
 pub mod si7021;
@@ -87,9 +87,9 @@ pub mod text_screen;
 pub mod tickv;
 pub mod touch;
 pub mod tsl2561;
-pub mod usb;
+// pub mod usb;
 pub mod virtual_adc;
-pub mod virtual_aes_ccm;
+// pub mod virtual_aes_ccm;
 pub mod virtual_alarm;
 pub mod virtual_digest;
 pub mod virtual_flash;
