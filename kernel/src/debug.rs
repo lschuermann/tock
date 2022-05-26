@@ -56,6 +56,7 @@ use core::str;
 
 use crate::collections::queue::Queue;
 use crate::collections::ring_buffer::RingBuffer;
+use crate::dmabuffer::{MutableDMABuffer, ReadableDMABufferHandle};
 use crate::hil;
 use crate::platform::chip::Chip;
 use crate::process::Process;
@@ -373,7 +374,7 @@ pub struct DebugWriter {
     // What provides the actual writing mechanism.
     uart: &'static dyn hil::uart::Transmit<'static>,
     // The buffer that is passed to the writing mechanism.
-    output_buffer: TakeCell<'static, [u8]>,
+    output_buffer: MutableDMABuffer,
     // An internal buffer that is used to hold debug!() calls as they come in.
     internal_buffer: TakeCell<'static, RingBuffer<'static, u8>>,
     // Number of debug!() calls.
@@ -413,7 +414,7 @@ impl DebugWriter {
     ) -> DebugWriter {
         DebugWriter {
             uart: uart,
-            output_buffer: TakeCell::new(out_buffer),
+            output_buffer: MutableDMABuffer::new(out_buffer),
             internal_buffer: TakeCell::new(internal_buffer),
             count: Cell::new(0), // how many debug! calls
         }
@@ -433,28 +434,36 @@ impl DebugWriter {
         // Can only publish if we have the output_buffer. If we don't that is
         // fine, we will do it when the transmit done callback happens.
         self.internal_buffer.map(|ring_buffer| {
-            if let Some(out_buffer) = self.output_buffer.take() {
-                let mut count = 0;
+            let count = self
+                .output_buffer
+                .map(|out_buffer| {
+                    let mut count = 0;
 
-                for dst in out_buffer.iter_mut() {
-                    match ring_buffer.dequeue() {
-                        Some(src) => {
-                            *dst = src;
-                            count += 1;
-                        }
-                        None => {
-                            break;
+                    for dst in out_buffer.iter_mut() {
+                        match ring_buffer.dequeue() {
+                            Some(src) => {
+                                *dst = src;
+                                count += 1;
+                            }
+                            None => {
+                                break;
+                            }
                         }
                     }
-                }
 
-                if count != 0 {
-                    // Transmit the data in the output buffer.
-                    if let Err((_err, buf)) = self.uart.transmit_buffer(out_buffer, count) {
-                        self.output_buffer.put(Some(buf));
-                    } else {
-                        self.output_buffer.put(None);
-                    }
+                    count
+                })
+                .unwrap_or(0);
+
+            if count != 0 {
+                // Has to succeed, given we were able to map the buffer above
+                // when count != 0.
+                let handle = self.output_buffer.borrow_readable().unwrap();
+
+                if let Err((_err, handle)) = self.uart.transmit_buffer(handle, count) {
+                    // Has to succeed, otherwise the lower layer passed an
+                    // incorrect handle back up.
+                    self.output_buffer.return_readable(handle).unwrap();
                 }
             }
         });
@@ -468,12 +477,12 @@ impl DebugWriter {
 impl hil::uart::TransmitClient for DebugWriter {
     fn transmitted_buffer(
         &self,
-        buffer: &'static mut [u8],
+        handle: ReadableDMABufferHandle,
         _tx_len: usize,
         _rcode: core::result::Result<(), ErrorCode>,
     ) {
-        // Replace this buffer since we are done with it.
-        self.output_buffer.replace(buffer);
+        // Place the buffer handle back. Assert that we got passed the correct one.
+        self.output_buffer.return_readable(handle).unwrap();
 
         if self.internal_buffer.map_or(false, |buf| buf.has_elements()) {
             // Buffer not empty, go around again

@@ -37,6 +37,7 @@
 //! the driver. Successive writes must call `allow` each time a buffer is to be
 //! written.
 
+use kernel::dmabuffer::{MutableDMABuffer, ReadableDMABufferHandle};
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, GrantKernelData, UpcallCount};
 use kernel::hil::uart;
 use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
@@ -89,7 +90,7 @@ pub struct Console<'a> {
         AllowRwCount<{ rw_allow::COUNT }>,
     >,
     tx_in_progress: OptionalCell<ProcessId>,
-    tx_buffer: TakeCell<'static, [u8]>,
+    tx_buffer: MutableDMABuffer,
     rx_in_progress: OptionalCell<ProcessId>,
     rx_buffer: TakeCell<'static, [u8]>,
 }
@@ -110,7 +111,7 @@ impl<'a> Console<'a> {
             uart: uart,
             apps: grant,
             tx_in_progress: OptionalCell::empty(),
-            tx_buffer: TakeCell::new(tx_buffer),
+            tx_buffer: MutableDMABuffer::new(tx_buffer),
             rx_in_progress: OptionalCell::empty(),
             rx_buffer: TakeCell::new(rx_buffer),
         }
@@ -155,42 +156,51 @@ impl<'a> Console<'a> {
     fn send(&self, app_id: ProcessId, app: &mut App, kernel_data: &GrantKernelData) {
         if self.tx_in_progress.is_none() {
             self.tx_in_progress.set(app_id);
-            self.tx_buffer.take().map(|buffer| {
-                let transaction_len = kernel_data
-                    .get_readonly_processbuffer(ro_allow::WRITE)
-                    .and_then(|write| {
-                        write.enter(|data| {
-                            let remaining_data = match data
-                                .get(app.write_len - app.write_remaining..app.write_len)
-                            {
-                                Some(remaining_data) => remaining_data,
-                                None => {
-                                    // A slice has changed under us and is now
-                                    // smaller than what we need to write. Our
-                                    // behavior in this case is documented as
-                                    // undefined; the simplest thing we can do
-                                    // that doesn't panic is to abort the write.
-                                    // We update app.write_len so that the
-                                    // number of bytes written (which is passed
-                                    // to the write done upcall) is correct.
-                                    app.write_len -= app.write_remaining;
-                                    app.write_remaining = 0;
-                                    return 0;
+            let transaction_len = self
+                .tx_buffer
+                .map(|buffer| {
+                    kernel_data
+                        .get_readonly_processbuffer(ro_allow::WRITE)
+                        .and_then(|write| {
+                            write.enter(|data| {
+                                let remaining_data = match data
+                                    .get(app.write_len - app.write_remaining..app.write_len)
+                                {
+                                    Some(remaining_data) => remaining_data,
+                                    None => {
+                                        // A slice has changed under us and is now
+                                        // smaller than what we need to write. Our
+                                        // behavior in this case is documented as
+                                        // undefined; the simplest thing we can do
+                                        // that doesn't panic is to abort the write.
+                                        // We update app.write_len so that the
+                                        // number of bytes written (which is passed
+                                        // to the write done upcall) is correct.
+                                        app.write_len -= app.write_remaining;
+                                        app.write_remaining = 0;
+                                        return 0;
+                                    }
+                                };
+                                for (i, c) in remaining_data.iter().enumerate() {
+                                    if buffer.len() <= i {
+                                        return i; // Short circuit on partial send
+                                    }
+                                    buffer[i] = c.get();
                                 }
-                            };
-                            for (i, c) in remaining_data.iter().enumerate() {
-                                if buffer.len() <= i {
-                                    return i; // Short circuit on partial send
-                                }
-                                buffer[i] = c.get();
-                            }
-                            app.write_remaining
+                                app.write_remaining
+                            })
                         })
-                    })
-                    .unwrap_or(0);
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
+
+            if transaction_len != 0 {
+                // Guaranteed to succeed, as with transaction_len != 0
+                // we've successfully mapped the buffer above already.
+                let handle = self.tx_buffer.borrow_readable().unwrap();
                 app.write_remaining -= transaction_len;
-                let _ = self.uart.transmit_buffer(buffer, transaction_len);
-            });
+                let _ = self.uart.transmit_buffer(handle, transaction_len);
+            }
         } else {
             app.pending_write = true;
         }
@@ -301,13 +311,13 @@ impl SyscallDriver for Console<'_> {
 impl uart::TransmitClient for Console<'_> {
     fn transmitted_buffer(
         &self,
-        buffer: &'static mut [u8],
+        handle: ReadableDMABufferHandle,
         _tx_len: usize,
         _rcode: Result<(), ErrorCode>,
     ) {
         // Either print more from the AppSlice or send a callback to the
         // application.
-        self.tx_buffer.replace(buffer);
+        self.tx_buffer.return_readable(handle).unwrap();
         self.tx_in_progress.take().map(|appid| {
             self.apps.enter(appid, |app, kernel_data| {
                 match self.send_continue(appid, app, kernel_data) {

@@ -45,6 +45,7 @@ use core::cell::Cell;
 use core::cmp;
 
 use kernel::collections::list::{List, ListLink, ListNode};
+use kernel::dmabuffer::ReadableDMABufferHandle;
 use kernel::dynamic_deferred_call::{
     DeferredCallHandle, DynamicDeferredCall, DynamicDeferredCallClient,
 };
@@ -69,7 +70,7 @@ pub struct MuxUart<'a> {
 impl<'a> uart::TransmitClient for MuxUart<'a> {
     fn transmitted_buffer(
         &self,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: ReadableDMABufferHandle,
         tx_len: usize,
         rcode: Result<(), ErrorCode>,
     ) {
@@ -327,7 +328,7 @@ pub struct UartDevice<'a> {
     state: Cell<UartDeviceReceiveState>,
     mux: &'a MuxUart<'a>,
     receiver: bool, // Whether or not to pass this UartDevice incoming messages.
-    tx_buffer: TakeCell<'static, [u8]>,
+    tx_buffer: OptionalCell<ReadableDMABufferHandle>,
     transmitting: Cell<bool>,
     rx_buffer: TakeCell<'static, [u8]>,
     rx_position: Cell<usize>,
@@ -344,7 +345,7 @@ impl<'a> UartDevice<'a> {
             state: Cell::new(UartDeviceReceiveState::Idle),
             mux: mux,
             receiver: receiver,
-            tx_buffer: TakeCell::empty(),
+            tx_buffer: OptionalCell::empty(),
             transmitting: Cell::new(false),
             rx_buffer: TakeCell::empty(),
             rx_position: Cell::new(0),
@@ -365,7 +366,7 @@ impl<'a> UartDevice<'a> {
 impl<'a> uart::TransmitClient for UartDevice<'a> {
     fn transmitted_buffer(
         &self,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: ReadableDMABufferHandle,
         tx_len: usize,
         rcode: Result<(), ErrorCode>,
     ) {
@@ -415,9 +416,9 @@ impl<'a> uart::Transmit<'a> for UartDevice<'a> {
     /// Transmit data.
     fn transmit_buffer(
         &self,
-        tx_data: &'static mut [u8],
+        tx_data: ReadableDMABufferHandle,
         tx_len: usize,
-    ) -> Result<(), (ErrorCode, &'static mut [u8])> {
+    ) -> Result<(), (ErrorCode, ReadableDMABufferHandle)> {
         if self.transmitting.get() {
             Err((ErrorCode::BUSY, tx_data))
         } else {

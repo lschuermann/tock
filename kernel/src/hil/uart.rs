@@ -2,6 +2,7 @@
 //!
 //!
 
+use crate::dmabuffer::ReadableDMABufferHandle;
 use crate::ErrorCode;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -110,9 +111,9 @@ pub trait Transmit<'a> {
     /// `transmit_buffer` or `transmit_word` operation will return BUSY.
     fn transmit_buffer(
         &self,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: ReadableDMABufferHandle,
         tx_len: usize,
-    ) -> Result<(), (ErrorCode, &'static mut [u8])>;
+    ) -> Result<(), (ErrorCode, ReadableDMABufferHandle)>;
 
     /// Transmit a single word of data asynchronously. The word length is
     /// determined by the UART configuration: it can be 6, 7, 8, or 9 bits long.
@@ -246,7 +247,7 @@ pub trait TransmitClient {
     ///   - FAIL if the transmission failed in some way.
     fn transmitted_buffer(
         &self,
-        tx_buffer: &'static mut [u8],
+        tx_buffer: ReadableDMABufferHandle,
         tx_len: usize,
         rval: Result<(), ErrorCode>,
     );

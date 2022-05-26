@@ -4,9 +4,9 @@ use core::cell::Cell;
 use kernel::ErrorCode;
 
 use crate::gpio;
+use kernel::dmabuffer::ReadableDMABufferHandle;
 use kernel::hil;
 use kernel::utilities::cells::OptionalCell;
-use kernel::utilities::cells::TakeCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
@@ -65,7 +65,7 @@ pub struct Uart<'a> {
     tx_client: OptionalCell<&'a dyn hil::uart::TransmitClient>,
     rx_client: OptionalCell<&'a dyn hil::uart::ReceiveClient>,
     stop_bits: Cell<hil::uart::StopBits>,
-    buffer: TakeCell<'static, [u8]>,
+    buffer: OptionalCell<ReadableDMABufferHandle>,
     len: Cell<usize>,
     index: Cell<usize>,
 }
@@ -83,7 +83,7 @@ impl<'a> Uart<'a> {
             tx_client: OptionalCell::empty(),
             rx_client: OptionalCell::empty(),
             stop_bits: Cell::new(hil::uart::StopBits::One),
-            buffer: TakeCell::empty(),
+            buffer: OptionalCell::empty(),
             len: Cell::new(0),
             index: Cell::new(0),
         }
@@ -140,7 +140,8 @@ impl<'a> Uart<'a> {
                 });
             } else {
                 // More to send. Fill the buffer until it is full.
-                self.buffer.map(|buffer| {
+                if let Some(handle) = self.buffer.take() {
+                    let buffer = handle.get();
                     for i in self.index.get()..self.len.get() {
                         // Write the byte from the array to the tx register.
                         regs.txdata.write(txdata::data.val(buffer[i] as u32));
@@ -151,7 +152,8 @@ impl<'a> Uart<'a> {
                             break;
                         }
                     }
-                });
+                    self.buffer.replace(handle);
+                }
             }
         }
     }
@@ -195,9 +197,9 @@ impl<'a> hil::uart::Transmit<'a> for Uart<'a> {
 
     fn transmit_buffer(
         &self,
-        tx_data: &'static mut [u8],
+        tx_data: ReadableDMABufferHandle,
         tx_len: usize,
-    ) -> Result<(), (ErrorCode, &'static mut [u8])> {
+    ) -> Result<(), (ErrorCode, ReadableDMABufferHandle)> {
         let regs = self.registers;
 
         if tx_len == 0 {
@@ -208,9 +210,10 @@ impl<'a> hil::uart::Transmit<'a> for Uart<'a> {
         self.enable_tx_interrupt();
 
         // Fill the TX buffer until it reports full.
+        let buffer = tx_data.get();
         for i in 0..tx_len {
             // Write the byte from the array to the tx register.
-            regs.txdata.write(txdata::data.val(tx_data[i] as u32));
+            regs.txdata.write(txdata::data.val(buffer[i] as u32));
             self.index.set(i + 1);
             // Check if the buffer is full
             if regs.txdata.is_set(txdata::full) {
