@@ -1,5 +1,7 @@
 use core::cell::Cell;
+use core::cmp;
 use core::mem;
+use core::ops::Range;
 use core::ptr::NonNull;
 use core::slice;
 
@@ -138,6 +140,30 @@ impl MutableDMABuffer {
         }
     }
 
+    pub fn borrow_readable_window(&self, window: Range<usize>) -> Option<ReadableDMABufferHandle> {
+        // Implemented to reuse the `borrow_readable` method and reduce the
+        // retrieved pointer range respectively.
+        if let Some(full_handle) = self.borrow_readable() {
+            if window.start <= window.end
+                && window.end < full_handle.len
+                && window.end <= (isize::MAX as usize)
+            {
+                Some(ReadableDMABufferHandle {
+                    ptr: unsafe {
+                        NonNull::new_unchecked(full_handle.ptr.as_ptr().add(window.start))
+                    },
+                    len: window.end - window.start,
+                    handle_id: full_handle.handle_id,
+                })
+            } else {
+                self.return_readable(full_handle).unwrap();
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     pub fn return_readable(
         &self,
         handle: ReadableDMABufferHandle,
@@ -162,6 +188,44 @@ impl MutableDMABuffer {
             // The passed handle does not correspond to us, return it.
             Err(handle)
         }
+    }
+
+    pub fn advance_readable_window(
+        &self,
+        handle: ReadableDMABufferHandle,
+    ) -> Result<Option<ReadableDMABufferHandle>, ReadableDMABufferHandle> {
+        let prev_ptr: *const u8 = handle.ptr.as_ptr();
+        let prev_len: usize = handle.len;
+
+        self.return_readable(handle).map(|()| {
+            // Handle has been returned, we can check whether the next slice
+            // would be of zero length in which case we don't try to
+            // reborrow.
+
+            // A buffer has to be present, given we've just returned a
+            // buffer handle.
+            let (buffer_ptr, buffer_len) = self.buffer.get().unwrap();
+
+            // Calculate the next window start address.
+            let prev_offset = unsafe { prev_ptr.offset_from(buffer_ptr.as_ptr()) } as usize;
+            let next_offset = prev_offset + prev_len;
+
+            if next_offset >= buffer_len {
+                // We can't advance the window any further
+                None
+            } else {
+                // There's still a subsequent region left in the buffer,
+                // calculate its length and try to reborrow.
+                let next_len = cmp::min(buffer_len - next_offset, prev_len);
+                // The borrowing has to work, given we've calculated a range
+                // which is guaranteed to be in bounds and just successfully
+                // returned the previous handle:
+                Some(
+                    self.borrow_readable_window(next_offset..(next_offset + next_len))
+                        .unwrap(),
+                )
+            }
+        })
     }
 
     pub fn map<R, F: FnOnce(&mut [u8]) -> R>(&self, fun: F) -> Option<R> {
@@ -238,6 +302,30 @@ impl ImmutableDMABuffer {
         }
     }
 
+    pub fn borrow_readable_window(&self, window: Range<usize>) -> Option<ReadableDMABufferHandle> {
+        // Implemented to reuse the `borrow_readable` method and reduce the
+        // retrieved pointer range respectively.
+        if let Some(full_handle) = self.borrow_readable() {
+            if window.start <= window.end
+                && window.end < full_handle.len
+                && window.end <= (isize::MAX as usize)
+            {
+                Some(ReadableDMABufferHandle {
+                    ptr: unsafe {
+                        NonNull::new_unchecked(full_handle.ptr.as_ptr().add(window.start))
+                    },
+                    len: window.end - window.start,
+                    handle_id: full_handle.handle_id,
+                })
+            } else {
+                self.return_readable(full_handle).unwrap();
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     pub fn return_readable(
         &self,
         handle: ReadableDMABufferHandle,
@@ -262,5 +350,43 @@ impl ImmutableDMABuffer {
             // The passed handle does not correspond to us, return it.
             Err(handle)
         }
+    }
+
+    pub fn advance_readable_window(
+        &self,
+        handle: ReadableDMABufferHandle,
+    ) -> Result<Option<ReadableDMABufferHandle>, ReadableDMABufferHandle> {
+        let prev_ptr: *const u8 = handle.ptr.as_ptr();
+        let prev_len: usize = handle.len;
+
+        self.return_readable(handle).map(|()| {
+            // Handle has been returned, we can check whether the next slice
+            // would be of zero length in which case we don't try to
+            // reborrow.
+
+            // A buffer has to be present, given we've just returned a
+            // buffer handle.
+            let buffer = self.buffer.get().unwrap();
+
+            // Calculate the next window start address.
+            let prev_offset = unsafe { prev_ptr.offset_from(buffer.as_ptr()) } as usize;
+            let next_offset = prev_offset + prev_len;
+
+            if next_offset >= buffer.len() {
+                // We can't advance the window any further
+                None
+            } else {
+                // There's still a subsequent region left in the buffer,
+                // calculate its length and try to reborrow.
+                let next_len = cmp::min(buffer.len() - next_offset, prev_len);
+                // The borrowing has to work, given we've calculated a range
+                // which is guaranteed to be in bounds and just successfully
+                // returned the previous handle:
+                Some(
+                    self.borrow_readable_window(next_offset..(next_offset + next_len))
+                        .unwrap(),
+                )
+            }
+        })
     }
 }
