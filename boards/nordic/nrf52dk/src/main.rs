@@ -99,9 +99,10 @@ const UART_CTS: Option<Pin> = Some(Pin::P0_07);
 const UART_RXD: Pin = Pin::P0_08;
 
 // SPI not used, but keep pins around
-const _SPI_MOSI: Pin = Pin::P0_22;
-const _SPI_MISO: Pin = Pin::P0_23;
-const _SPI_CLK: Pin = Pin::P0_24;
+const SPI_MOSI: Pin = Pin::P0_23;
+const SPI_MISO: Pin = Pin::P0_24;
+const SPI_CLK: Pin = Pin::P0_25;
+const SPI_CS: Pin = Pin::P0_19;
 
 /// UART Writer
 pub mod io;
@@ -356,7 +357,7 @@ pub unsafe fn main() {
     .finalize(());
 
     let dynamic_deferred_call_clients =
-        static_init!([DynamicDeferredCallClientState; 2], Default::default());
+        static_init!([DynamicDeferredCallClientState; 3], Default::default());
     let dynamic_deferred_caller = static_init!(
         DynamicDeferredCall,
         DynamicDeferredCall::new(dynamic_deferred_call_clients)
@@ -426,6 +427,70 @@ pub unsafe fn main() {
     .finalize(components::acomp_component_buf!(
         nrf52832::acomp::Comparator
     ));
+
+    // SPI
+    let mux_spi =
+        components::spi::SpiMuxComponent::new(&base_peripherals.spim0, dynamic_deferred_caller)
+        .finalize(components::spi_mux_component_helper!(nrf52832::spi::SPIM));
+
+    base_peripherals.spim0.configure(
+        nrf52832::pinmux::Pinmux::new(SPI_MOSI as u32),
+        nrf52832::pinmux::Pinmux::new(SPI_MISO as u32),
+        nrf52832::pinmux::Pinmux::new(SPI_CLK as u32),
+    );
+
+    let enc28j60_spim = static_init!(
+	capsules::virtual_spi::VirtualSpiMasterDevice<nrf52832::spi::SPIM>,
+        capsules::virtual_spi::VirtualSpiMasterDevice::new(mux_spi, &gpio_port[SPI_CS])
+    );
+
+    // // Create the SPI system call capsule.
+    // let spi_controller = components::spi::SpiSyscallComponent::new(
+    //     board_kernel,
+    //     mux_spi,
+    //     &gpio_port[SPI_CS],
+    //     capsules::spi_controller::DRIVER_NUM,
+    // )
+    // .finalize(components::spi_syscall_component_helper!(
+    //     nrf52840::spi::SPIM
+    // ));
+
+    let enc28j60_tx_buffer = static_init!(
+	[u8; 4096],
+	[0; 4096]
+    );
+    let enc28j60_rx_buffer = static_init!(
+	[u8; 4096],
+	[0; 4096]
+    );
+    let enc28j60_bufmembuffer = static_init!(
+	[u8; 64],
+	[0; 64]
+    );
+
+
+    let enc28j60 = static_init!(
+	capsules::enc28j60::ENC28J60<'static, capsules::virtual_spi::VirtualSpiMasterDevice<nrf52832::spi::SPIM>>,
+	capsules::enc28j60::ENC28J60::new(
+	    enc28j60_spim,
+	    &gpio_port[Pin::P0_20],
+	    dynamic_deferred_caller,
+	    enc28j60_tx_buffer,
+	    enc28j60_rx_buffer,
+	    enc28j60_bufmembuffer,
+	    [0x02, 0x00, 0x00, 0x00, 0x00, 0x02],
+	)
+    );
+
+    enc28j60_spim.setup();
+    use kernel::hil::spi::SpiMasterDevice;
+    enc28j60_spim.set_client(enc28j60);
+
+    enc28j60.initialize_deferred_call_handle(
+	// Unwrap fail = no deferred call slot available for uart mux
+        dynamic_deferred_caller.register(enc28j60).unwrap());
+
+    enc28j60.initialize().unwrap();
 
     nrf52_components::NrfClockComponent::new(&base_peripherals.clock).finalize(());
 
