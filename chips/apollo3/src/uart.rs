@@ -229,6 +229,15 @@ impl Uart<'_> {
         regs.fbrd.write(FBRD::DIVFRAC.val(fraction_divisor_long));
     }
 
+    fn get_baud_rate(&self) -> u32 {
+        let regs = self.registers;
+
+        let integer_divisor = regs.ibrd.read(IBRD::DIVINT);
+
+        let baud_rate = (self.clock_frequency / integer_divisor) / 16;
+        baud_rate
+    }
+
     fn enable_tx_interrupt(&self) {
         let regs = self.registers;
 
@@ -373,7 +382,71 @@ impl Uart<'_> {
     }
 }
 
+impl hil::uart::Configuration for Uart<'_> {
+    fn get_baud_rate(&self) -> u32 {
+        self.get_baud_rate()
+    }
+
+    fn get_width(&self) -> hil::uart::Width {
+        hil::uart::Width::Eight
+    }
+
+    fn get_parity(&self) -> hil::uart::Parity {
+        hil::uart::Parity::None
+    }
+
+    fn get_stop_bits(&self) -> hil::uart::StopBits {
+        hil::uart::StopBits::One
+    }
+
+    fn get_flow_control(&self) -> bool {
+        // Hardware flow control not supported
+        false
+    }
+}
+
 impl hil::uart::Configure for Uart<'_> {
+    fn set_baud_rate(&self, rate: u32) -> Result<u32, ErrorCode> {
+        let params = hil::uart::Parameters {
+            baud_rate: rate,
+            width: hil::uart::Width::Eight,
+            parity: hil::uart::Parity::None,
+            stop_bits: hil::uart::StopBits::One,
+            hw_flow_control: false,
+        };
+
+        self.configure(params)?;
+        Ok(self.get_baud_rate())
+    }
+
+    fn set_width(&self, width: hil::uart::Width) -> Result<(), ErrorCode> {
+        if width != hil::uart::Width::Eight {
+            Err(ErrorCode::NOSUPPORT)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_parity(&self, parity: hil::uart::Parity) -> Result<(), ErrorCode> {
+        if parity != hil::uart::Parity::None {
+            Err(ErrorCode::NOSUPPORT)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_stop_bits(&self, _stop_bits: hil::uart::StopBits) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NOSUPPORT)
+    }
+
+    fn set_flow_control(&self, on: bool) -> Result<(), ErrorCode> {
+        if on {
+            Err(ErrorCode::NOSUPPORT)
+        } else {
+            Ok(())
+        }
+    }
+
     fn configure(&self, params: hil::uart::Parameters) -> Result<(), ErrorCode> {
         let regs = self.registers;
 
@@ -389,7 +462,7 @@ impl hil::uart::Configure for Uart<'_> {
 
         // Setup the UART
         regs.cr.modify(CR::RTSEN::CLEAR + CR::CTSEN::CLEAR);
-        // Enalbe FIFO
+        // Enable FIFO
         regs.lcrh.write(LCRH::FEN::SET);
         // Set 8 data bits, no parity, 1 stop bit and no flow control
         regs.lcrh.modify(LCRH::WLEN.val(3) + LCRH::FEN::SET);
@@ -431,12 +504,20 @@ impl<'a> hil::uart::Transmit<'a> for Uart<'a> {
         }
     }
 
-    fn transmit_abort(&self) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn transmit_character(&self, _character: u32) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NOSUPPORT)
     }
 
-    fn transmit_word(&self, _word: u32) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn transmit_abort(&self) -> hil::uart::AbortResult {
+        // TODO: aborting a transmission is not currently supported.
+        if self.tx_buffer.is_some() {
+            // A transmission is currently ongoing, report it has not been
+            // cancelled.
+            hil::uart::AbortResult::Callback(false)
+        } else {
+            // There is nothing to abort.
+            hil::uart::AbortResult::NoCallback
+        }
     }
 }
 
@@ -463,11 +544,13 @@ impl<'a> hil::uart::Receive<'a> for Uart<'a> {
         }
     }
 
-    fn receive_abort(&self) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn receive_character(&self) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NOSUPPORT)
     }
 
-    fn receive_word(&self) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn receive_abort(&self) -> hil::uart::AbortResult {
+        // Given receive is not supported, this will never have an ongoing
+        // operation to cancel.
+        hil::uart::AbortResult::NoCallback
     }
 }
