@@ -98,6 +98,7 @@ pub mod collections;
 pub mod component;
 pub mod debug;
 pub mod deferred_call2;
+pub mod deferred_call3;
 pub mod dynamic_deferred_call;
 pub mod errorcode;
 pub mod grant;
