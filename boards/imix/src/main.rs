@@ -332,7 +332,7 @@ pub unsafe fn main() {
 
     set_pin_primary_functions(peripherals);
 
-    peripherals.setup_dma();
+    peripherals.setup_circular_deps();
     let chip = static_init!(
         sam4l::chip::Sam4l<Sam4lDefaultPeripherals>,
         sam4l::chip::Sam4l::new(pm, peripherals)
@@ -591,7 +591,6 @@ pub unsafe fn main() {
         aes_mux,
         PAN_ID,
         serial_num_bottom_16,
-        dynamic_deferred_caller,
     )
     .finalize(components::ieee802154_component_static!(
         capsules::rf233::RF233<'static, VirtualSpiMasterDevice<'static, sam4l::spi::SpiHw>>,

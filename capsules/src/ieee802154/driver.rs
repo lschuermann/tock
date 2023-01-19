@@ -11,9 +11,7 @@ use crate::net::stream::{decode_bytes, decode_u8, encode_bytes, encode_u8, SResu
 use core::cell::Cell;
 use core::cmp::min;
 
-use kernel::dynamic_deferred_call::{
-    DeferredCallHandle, DynamicDeferredCall, DynamicDeferredCallClient,
-};
+use kernel::deferred_call2::{DeferredCall, DeferredCallClient};
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
 use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
@@ -202,10 +200,7 @@ pub struct RadioDriver<'a> {
     kernel_tx: TakeCell<'static, [u8]>,
 
     /// Used to ensure callbacks are delivered during upcalls
-    deferred_caller: &'a DynamicDeferredCall,
-
-    /// Also used for deferred calls
-    handle: OptionalCell<DeferredCallHandle>,
+    deferred_caller: DeferredCall,
 
     /// Used to deliver callbacks to the correct app during deferred calls
     saved_processid: OptionalCell<ProcessId>,
@@ -224,7 +219,7 @@ impl<'a> RadioDriver<'a> {
             AllowRwCount<{ rw_allow::COUNT }>,
         >,
         kernel_tx: &'static mut [u8],
-        deferred_caller: &'a DynamicDeferredCall,
+        deferred_caller: DeferredCall,
     ) -> RadioDriver<'a> {
         RadioDriver {
             mac,
@@ -238,12 +233,7 @@ impl<'a> RadioDriver<'a> {
             deferred_caller,
             saved_processid: OptionalCell::empty(),
             saved_result: OptionalCell::empty(),
-            handle: OptionalCell::empty(),
         }
-    }
-
-    pub fn initialize_callback_handle(&self, handle: DeferredCallHandle) {
-        self.handle.replace(handle);
     }
 
     // Neighbor management functions
@@ -387,7 +377,7 @@ impl<'a> RadioDriver<'a> {
         if result != Ok(()) {
             self.saved_processid.set(processid);
             self.saved_result.set(result);
-            self.handle.map(|handle| self.deferred_caller.set(*handle));
+            self.deferred_caller.set();
         }
     }
 
@@ -474,8 +464,8 @@ impl<'a> RadioDriver<'a> {
     }
 }
 
-impl DynamicDeferredCallClient for RadioDriver<'_> {
-    fn call(&self, _handle: DeferredCallHandle) {
+impl DeferredCallClient for RadioDriver<'_> {
+    fn handle_deferred_call(&self) {
         let _ = self
             .apps
             .enter(self.saved_processid.unwrap_or_panic(), |_app, upcalls| {
