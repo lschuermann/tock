@@ -17,7 +17,6 @@
 //!         disp_pin,
 //!         extcomin_pin,
 //!         alarm_mux,
-//!         dynamic_deferred_caller,
 //!     )
 //!     .finalize(
 //!         components::lpm013m126_component_static!(
@@ -37,7 +36,6 @@ use capsules::virtual_alarm::{MuxAlarm, VirtualMuxAlarm};
 use capsules::virtual_spi::{MuxSpiMaster, VirtualSpiMasterDevice};
 use core::mem::MaybeUninit;
 use kernel::component::Component;
-use kernel::dynamic_deferred_call::DynamicDeferredCall;
 use kernel::hil::gpio;
 use kernel::hil::spi::{SpiMaster, SpiMasterDevice};
 use kernel::hil::time::Alarm;
@@ -124,7 +122,6 @@ where
     disp: &'static P,
     extcomin: &'static P,
     alarm_mux: &'static MuxAlarm<'static, A>,
-    deferred_caller: &'static DynamicDeferredCall,
 }
 
 impl<A, P, S> Lpm013m126Component<A, P, S>
@@ -141,7 +138,6 @@ where
         disp: &'static P,
         extcomin: &'static P,
         alarm_mux: &'static MuxAlarm<'static, A>,
-        deferred_caller: &'static DynamicDeferredCall,
     ) -> Self {
         Self {
             spi,
@@ -149,7 +145,6 @@ where
             disp,
             extcomin,
             alarm_mux,
-            deferred_caller,
         }
     }
 }
@@ -194,7 +189,6 @@ where
                 self.extcomin,
                 self.disp,
                 lpm013m126_alarm,
-                self.deferred_caller,
                 buffer,
             )
             .unwrap(),
