@@ -11,8 +11,6 @@
 
 use core::arch::asm;
 
-use kernel::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
-
 use capsules::virtual_alarm::VirtualMuxAlarm;
 use components::gpio::GpioComponent;
 use components::led::LedsComponent;
@@ -313,14 +311,6 @@ pub unsafe fn main() {
     let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
     let memory_allocation_capability = create_capability!(capabilities::MemoryAllocationCapability);
 
-    let dynamic_deferred_call_clients =
-        static_init!([DynamicDeferredCallClientState; 2], Default::default());
-    let dynamic_deferred_caller = static_init!(
-        DynamicDeferredCall,
-        DynamicDeferredCall::new(dynamic_deferred_call_clients)
-    );
-    DynamicDeferredCall::set_global_instance(dynamic_deferred_caller);
-
     let mux_alarm = components::alarm::AlarmMuxComponent::new(&peripherals.timer)
         .finalize(components::alarm_mux_component_static!(RPTimer));
 
@@ -333,12 +323,8 @@ pub unsafe fn main() {
 
     // UART
     // Create a shared UART channel for kernel debug.
-    let uart_mux = components::console::UartMuxComponent::new(
-        &peripherals.uart0,
-        115200,
-        dynamic_deferred_caller,
-    )
-    .finalize(components::uart_mux_component_static!());
+    let uart_mux = components::console::UartMuxComponent::new(&peripherals.uart0, 115200)
+        .finalize(components::uart_mux_component_static!());
 
     // Setup the console.
     let console = components::console::ConsoleComponent::new(
@@ -413,7 +399,7 @@ pub unsafe fn main() {
     spi_clk.set_function(GpioFunction::SPI);
     spi_csn.set_function(GpioFunction::SPI);
     spi_mosi.set_function(GpioFunction::SPI);
-    let mux_spi = components::spi::SpiMuxComponent::new(&peripherals.spi0, dynamic_deferred_caller)
+    let mux_spi = components::spi::SpiMuxComponent::new(&peripherals.spi0)
         .finalize(components::spi_mux_component_static!(Spi));
 
     let bus = components::bus::SpiMasterBusComponent::new(
