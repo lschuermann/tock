@@ -301,15 +301,10 @@ impl<'a> Clocks<'a> {
     }
 
     // APB1 frequency must not be higher than the maximum allowable frequency. This method is
-    // called when the system clock source is changed. The sys_clk_frequency_mhz is the
+    // called when the system clock source is changed. The ahb_frequency_mhz is the
     // hypothetical future frequency.
-    fn check_apb1_frequency_limit(&self, sys_clk_frequency_mhz: usize) -> bool {
-        match self.rcc.get_apb1_prescaler() {
-            APBPrescaler::DivideBy1 => sys_clk_frequency_mhz <= APB1_FREQUENCY_LIMIT_MHZ,
-            APBPrescaler::DivideBy2 => sys_clk_frequency_mhz <= APB1_FREQUENCY_LIMIT_MHZ * 2,
-            // For all models 4 * APB1_MAX_FREQUENCY >= SYS_MAX_FREQUENCY
-            _ => true,
-        }
+    fn check_apb1_frequency_limit(&self, ahb_frequency_mhz: usize) -> bool {
+        ahb_frequency_mhz <= APB1_FREQUENCY_LIMIT_MHZ * Into::<usize>::into(self.rcc.get_apb1_prescaler())
     }
 
     /// Set the APB1 prescaler.
@@ -352,12 +347,8 @@ impl<'a> Clocks<'a> {
     }
 
     // Same as for APB1, APB2 has a frequency limit that must be enforced by software
-    fn check_apb2_frequency_limit(&self, sys_clk_frequency_mhz: usize) -> bool {
-        match self.rcc.get_apb2_prescaler() {
-            APBPrescaler::DivideBy1 => sys_clk_frequency_mhz <= APB2_FREQUENCY_LIMIT_MHZ,
-            // For all models 2 * APB2_MAX_FREQUENCY >= SYS_MAX_FREQUENCY
-            _ => true,
-        }
+    fn check_apb2_frequency_limit(&self, ahb_frequency_mhz: usize) -> bool {
+        ahb_frequency_mhz <= APB2_FREQUENCY_LIMIT_MHZ * Into::<usize>::into(self.rcc.get_apb2_prescaler())
     }
 
     /// Set the APB2 prescaler.
@@ -431,12 +422,6 @@ impl<'a> Clocks<'a> {
             SysClockSource::PLL => self.pll.get_frequency().unwrap(),
         };
 
-        // HELP: Confusing point. The PLL clock can output a frequency up to 216MHz, but the doc
-        // warns that the output must not surpass system clock frequency limit. My assumption is
-        // that if the PLL clock is used as a system clock source, then its frequency has to be
-        // checked. Otherwise, if it is used as a microcontroller clock output (MCO), the entire
-        // frequency range is available.
-        //
         // Check the alternate frequency is not higher than the system clock limit
         if alternate_frequency > SYS_CLOCK_FREQUENCY_LIMIT_MHZ {
             return Err(ErrorCode::SIZE);
@@ -448,12 +433,12 @@ impl<'a> Clocks<'a> {
         let ahb_frequency = alternate_frequency / ahb_divider;
 
         // APB1 frequency must not exceed APB1_FREQUENCY_LIMIT_MHZ
-        if let false = self.check_apb1_frequency_limit(ahb_frequency) {
+        if !self.check_apb1_frequency_limit(ahb_frequency) {
             return Err(ErrorCode::SIZE);
         }
 
         // APB2 frequency must not exceed APB2_FREQUENCY_LIMIT_MHZ
-        if let false = self.check_apb2_frequency_limit(ahb_frequency) {
+        if !self.check_apb2_frequency_limit(ahb_frequency) {
             return Err(ErrorCode::SIZE);
         }
 
@@ -642,6 +627,8 @@ pub mod tests {
         assert_eq!(HSI_FREQUENCY_MHZ, clocks.get_apb2_frequency());
     }
 
+    // This macro ensure that the system clock frequency goes back to the default value to prevent
+    // changing the UART's baud rate
     macro_rules! check_and_panic {
         ($left:expr, $right:expr, $clocks: ident) => {
             match (&$left, &$right) {
