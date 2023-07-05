@@ -248,93 +248,102 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
         asm!("
           // Before switching to the app we need to save some kernel registers
           // to the kernel stack, specifically ones which we can't mark as
-          // clobbered in the asm!() block. We then save the stack pointer in
-          // the mscratch CSR (0x340) so we can retrieve it after returning to
-          // the kernel from the app.
+          // clobbered in the asm!() block. We set up the stack such that the
+          // `_start_trap` handler will invoke our context-specific trap handler
+          // by jumping to `_app_trap_continue` below in this block. Finally,
+          // activate this trap handler by storing the stack pointer in the
+          // `mscratch` CSR.
           //
-          // A few values get saved to the kernel stack, including an app
-          // register temporarily after entering the trap handler. Here is a
-          // memory map to make it easier to keep track:
+          // Here is a memory map of our intended stack layout, to make it
+          // easier to keep track:
           //
           // ```
           //  8*4(sp):          <- original stack pointer
-          //  7*4(sp):
-          //  6*4(sp): x9
-          //  5*4(sp): x8
-          //  4*4(sp): x4
-          //  3*4(sp): x3
-          //  2*4(sp): _return_to_kernel (100) (address to resume after trap)
-          //  1*4(sp): *state   (Per-process StoredState struct)
-          //  0*4(sp): app s0   <- new stack pointer
+          //  7*4(sp): x9 (s1)
+          //  6*4(sp): x8 (fp)
+          //  5*4(sp): x4 (tp)
+          //  4*4(sp): x3 (gp)
+          //  3*4(sp): *state   (per-process StoredState struct)
+          //  2*4(sp): previous (kernel-mode) mscratch trap handler address
+          //  -v-v-v-v-v mandated stack layout by `_start_trap` v-v-v-v-v-v-v-v-
+          //  1*4(sp): scratch word (written with `t0` in `_start_trap`)
+          //  0*4(sp): _app_trap_continue (100) (address to jump to on trap)
           // ```
+          //
+          // We make sure that the new stack pointer is 16 byte aligned, as per
+          // RISC-V calling convention.
 
           addi sp, sp, -8*4  // Move the stack pointer down to make room.
 
-          // Save all registers on the kernel stack which cannot be clobbered
+          // Save all registers on the kernel stack that cannot be clobbered
           // by an asm!() block. These are mostly registers which have a
           // designated purpose (e.g. stack pointer) or are used internally
           // by LLVM.
+          sw   x9,  7*4(sp)   // s1 (used internally by LLVM)
+          sw   x8,  6*4(sp)   // fp (can't be clobbered / used as an operand)
+          sw   x4,  5*4(sp)   // tp (can't be clobbered / used as an operand)
+          sw   x3,  4*4(sp)   // gp (can't be clobbered / used as an operand)
           //   x2             // sp -> saved in mscratch CSR below
-          sw   x3,  3*4(sp)   // gp (can't be clobbered / used as an operand)
-          sw   x4,  4*4(sp)   // tp (can't be clobbered / used as an operand)
-          sw   x8,  5*4(sp)   // fp (can't be clobbered / used as an operand)
-          sw   x9,  6*4(sp)   // s1 (used internally by LLVM)
 
-          sw   a0, 1*4(sp)    // Store process state pointer on stack as well.
-                              // We need to have this available for after the app
-                              // returns to the kernel so we can store its
-                              // registers.
+          // Store process state pointer on stack as well. We need to have this
+          // available for after the app returns to the kernel so we can store
+          // its registers.
+          sw   t0,  3*4(sp)
 
-          // From here on we can't allow the CPU to take interrupts
-          // anymore, as that might result in the trap handler
-          // believing that a context switch to userspace already
-          // occurred (as mscratch is non-zero). Restore the userspace
-          // state fully prior to enabling interrupts again
-          // (implicitly using mret).
+          // From here on we can't allow the CPU to take interrupts anymore, as
+          // that might result in the trap handler believing that a context
+          // switch to userspace already occurred (as mscratch is non-zero).
+          // Restore the userspace state fully prior to enabling interrupts
+          // again (implicitly using mret).
           //
           // If this is executed _after_ setting mscratch, this result
-          // in the race condition of [PR
-          // 2308](https://github.com/tock/tock/pull/2308)
+          // in the race condition of
+          // [PR 2308](https://github.com/tock/tock/pull/2308)
 
           // Therefore, clear the following bits in mstatus first:
           //   0x00000008 -> bit 3 -> MIE (disabling interrupts here)
           // + 0x00001800 -> bits 11,12 -> MPP (switch to usermode on mret)
-          li t0, 0x00001808
-          csrrc x0, 0x300, t0      // clear bits in mstatus, don't care about read
+          li t1, 0x00001808
+          csrrc x0, 0x300, t1    // clear bits in mstatus, don't care about read
 
           // Afterwards, set the following bits in mstatus:
           //   0x00000080 -> bit 7 -> MPIE (enable interrupts on mret)
-          li t0, 0x00000080
-          csrrs x0, 0x300, t0      // set bits in mstatus, don't care about read
+          li t1, 0x00000080
+          csrrs x0, 0x300, t1    // set bits in mstatus, don't care about read
 
-
-          // Store the address to jump back to on the stack so that the trap
-          // handler knows where to return to after the app stops executing.
+          // Indicate that the trap handler should jump to the
+          // `_app_trap_continue` on a trap.
           //
           // In asm!() we can't use the shorthand `li` pseudo-instruction, as it
-          // complains about _return_to_kernel (100) not being a constant in the
-          // required range.
-          lui  t0, %hi(100f)
-          addi t0, t0, %lo(100f)
-          sw   t0, 2*4(sp)
+          // complains about _app_trap_continue (100) not being a constant in
+          // the required range.
+          lui  t1, %hi(100f)
+          addi t1, t1, %lo(100f)
+          sw   t1, 0*4(sp)
 
-          csrw 0x340, sp      // Save stack pointer in mscratch. This allows
-                              // us to find it when the app returns back to
-                              // the kernel.
+          // Swap out the (kernel-mode) dynamic dispatch trap-handler stack
+          // for our current `sp`. This will point the `_start_trap` handler to
+          // the `_app_trap_continue` symbol for handling traps arriving while
+          // in userspace.
+          //
+          // We further save the kernel-mode trap handler stack pointer on our
+          // current stack, to restore it when we're switching back into kernel
+          // mode.
+          csrrw t1, mscratch, sp
+          sw    t1, 2*4(sp)
 
           // We have to set the mepc CSR with the PC we want the app to start
           // executing at. This has been saved in Riscv32iStoredState for us
           // (either when the app returned back to the kernel or in the
           // `set_process_function()` function).
-          lw   t0, 31*4(a0)   // Retrieve the PC from Riscv32iStoredState
-          csrw 0x341, t0      // Set mepc CSR. This is the PC we want to go to.
+          lw   t1, 31*4(t0)   // Retrieve the PC from Riscv32iStoredState
+          csrw mepc, t1       // Set mepc CSR. This is the PC we want to go to.
 
           // Restore all of the app registers from what we saved. If this is the
           // first time running the app then most of these values are
           // irrelevant, However we do need to set the four arguments to the
-          // `_start_ function in the app. If the app has been executing then this
-          // allows the app to correctly resume.
-          mv   t0,  a0       // Save the state pointer to a specific register.
+          // `_start_ function in the app. If the app has been executing then
+          // this allows the app to correctly resume.
           lw   x1,  0*4(t0)  // ra
           lw   x2,  1*4(t0)  // sp
           lw   x3,  2*4(t0)  // gp
@@ -371,25 +380,135 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // start running the app.
           mret
 
-
-
-
           // This is where the trap handler jumps back to after the app stops
-          // executing.
-        100: // _return_to_kernel
+          // executing. We will still be in the trap handler context, and have
+          // to switch back to kernel mode using `mret` accordingly.
+        100: // _app_trap_continue
+
+          // At this point all we know is that we entered the trap handler
+          // from an app. We don't know _why_ we got a trap, it could be from
+          // an interrupt, syscall, or fault (or maybe something else).
+          // Therefore we have to be very careful not to overwrite any
+          // registers before we have saved them.
+          //
+          // We arrive at this userspace-specific trap handler through a
+          // dispatch by the generic `_start_trap` handler. The generic
+          // handler has made the following modifications to the register
+          // file:
+          //
+          // - `sp` now points to our current stack frame, as previously
+          //   saved to the `mscratch` CSR. The `mscratch` CSR contains the
+          //   app's `sp` register value.
+          //
+          // - the `t0` register is clobbered, its original value stored at
+          //   `2*4(sp)`.
+          //
+          // We need to save the current register file in the per-process stored
+          // state struct. Load a pointer to that struct into the already
+          // clobbered t0:
+          lw   t0, 3*4(sp)
+
+          // Now, save the register file (excluding t0):
+          sw   x1,  0*4(t0)  // ra
+          sw   x3,  2*4(t0)  // gp
+          sw   x4,  3*4(t0)  // tp
+                             // t0 -> don't save yet, clobbered
+          sw   x6,  5*4(t0)  // t1
+          sw   x7,  6*4(t0)  // t2
+          sw   x8,  7*4(t0)  // s0
+          sw   x9,  8*4(t0)  // s1
+          sw   x10, 9*4(t0)  // a0
+          sw   x11, 10*4(t0) // a1
+          sw   x12, 11*4(t0) // a2
+          sw   x13, 12*4(t0) // a3
+          sw   x14, 13*4(t0) // a4
+          sw   x15, 14*4(t0) // a5
+          sw   x16, 15*4(t0) // a6
+          sw   x17, 16*4(t0) // a7
+          sw   x18, 17*4(t0) // s2
+          sw   x19, 18*4(t0) // s3
+          sw   x20, 19*4(t0) // s4
+          sw   x21, 20*4(t0) // s5
+          sw   x22, 21*4(t0) // s6
+          sw   x23, 22*4(t0) // s7
+          sw   x24, 23*4(t0) // s8
+          sw   x25, 24*4(t0) // s9
+          sw   x26, 25*4(t0) // s10
+          sw   x27, 26*4(t0) // s11
+          sw   x28, 27*4(t0) // t3
+          sw   x29, 28*4(t0) // t4
+          sw   x30, 29*4(t0) // t5
+          sw   x31, 30*4(t0) // t6
+
+          // Now retrieve the original value of t0 and save that as well.
+          // It's fine to clobber the already saved t1.
+          lw   t1,  1*4(sp)  // Load app's t0 as saved by _start_trap
+          sw   t1,  4*4(t0)  // Save app's t0 to stored state struct
+
+          // We also need to store the app stack pointer, mcause, and mepc. We
+          // need to store mcause because we use that to determine why the app
+          // stopped executing and returned to the kernel. We store mepc
+          // because it is where we need to return to in the app at some
+          // point. We need to store mtval in case the app faulted and we need
+          // mtval to help with debugging.
+          csrr t1, 0x341    // CSR=0x341=mepc
+          sw   t1, 31*4(t0) // Save the PC to the stored state struct
+          csrr t1, 0x343    // CSR=0x343=mtval
+          sw   t1, 33*4(t0) // Save mtval to the stored state struct
+
+          // In addition to simply storing the app's stack pointer (which has
+          // been loaded into mscratch by `_start_trap`), we need to restore the
+          // kernel-mode trap handler stack. We stored this on our current
+          // stack, before switching to userspace:
+          lw   t1, 2*4(sp)    // Load the kernel trap handler sp from the stack
+          csrrw t1, 0x340, t1 // CSR=0x340=mscratch
+          sw   t1, 1*4(t0)    // Save the app sp to the stored state struct
+
+          // Save mcause last, as we depend on it being loaded in a0 below
+          csrr a0, 0x342    // CSR=0x342=mcause
+          sw   a0, 32*4(t0) // Save mcause to the stored state struct, leave in a0
+
+          // Now we need to check if this was an interrupt, and if it was,
+          // then we need to disable the interrupt before returning from this
+          // trap handler so that it does not fire again. If mcause is greater
+          // than or equal to zero this was not an interrupt (i.e. the most
+          // significant bit is not 1).
+          bge  a0, zero, 200f
+          // With mcause in a0, call the interrupt disable function:
+          jal  ra, _disable_interrupt_trap_rust_from_app
+
+        200: // _app_trap_continue_interrupts_disabled
+          // With interrupts disabled, we can finally exit the trap handler.
+          // We need to load _return_to_kernel into mepc so we can use it to
+          // continue execution in this context switch code:
+          lui  t1, %hi(300f)
+          addi t1, t1, %lo(300f)
+          csrw 0x341, t1    // CSR=0x341=mepc
+
+          // Need to set mstatus.MPP to 0b11 so that we stay in machine mode.
+          csrr t1, 0x300    // CSR=0x300=mstatus
+          li   t2, 0x1800   // Load 0b11 to the MPP bits location in t2
+          or   t1, t1, t2   // Set the MPP bits to one
+          csrw 0x300, t1    // CSR=0x300=mstatus
+
+          // Use mret to exit the trap handler and return to the context
+          // switching code.
+          mret
+
+        300: // _return_to_kernel
 
           // We have already stored the app registers in the trap handler. We
           // can restore the kernel registers before resuming kernel code.
+          lw   x9,  7*4(sp)  // s1 (used internally by LLVM)
+          lw   x8,  6*4(sp)  // fp (can't be clobbered / used as an operand)
+          lw   x4,  5*4(sp)  // tp (can't be clobbered / used as an operand)
+          lw   x3,  4*4(sp)  // gp (can't be clobbered / used as an operand)
           //   x2            // sp -> loaded from mscratch by the trap handler
-          lw   x3,  3*4(sp)  // gp (can't be clobbered / used as an operand)
-          lw   x4,  4*4(sp)  // tp (can't be clobbered / used as an operand)
-          lw   x8,  5*4(sp)  // fp (can't be clobbered / used as an operand)
-          lw   x9,  6*4(sp)  // s1 (used internally by LLVM)
 
-          lw   a0,  1*4(sp)  // Restore the the process state pointer such that
-                             // we don't need to mark it as clobbered.
-                             // Otherwise, this would cause Rust to stack a
-                             // register which we already manually save.
+          // The trap handler has already restored the process state pointer and
+          // loaded it into `t0`, which is the register that the Rust asm!()
+          // block has originally placed it in. Thus we don't need to restore
+          // it. This saves Rust from stacking a register.
 
           addi sp, sp, 8*4   // Reset kernel stack pointer
           ",
@@ -398,13 +517,13 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // particularly relevant, however we must avoid using t0
           // as that is overwritten prior to being accessed
           // (although stored and later restored) in the assembly
-          in("a0") state as *mut Riscv32iStoredState,
+          in("t0") state as *mut Riscv32iStoredState,
 
           // Clobber all registers which can be marked as clobbered, except
           // for `a0` / `x10`. By making it retain the value of `&mut state`,
           // which we need to stack manually anyway, we can avoid Rust/LLVM
           // stacking it redundantly for us.
-          out("x1") _, out("x5") _, out("x6") _, out("x7") _, out("x11") _,
+          out("x1") _, out("x6") _, out("x7") _, out("x10") _, out("x11") _,
           out("x12") _, out("x13") _, out("x14") _, out("x15") _, out("x16") _,
           out("x17") _, out("x18") _, out("x19") _, out("x20") _, out("x21") _,
           out("x22") _, out("x23") _, out("x24") _, out("x25") _, out("x26") _,
