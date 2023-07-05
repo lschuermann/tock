@@ -590,6 +590,31 @@ pub unsafe fn main() {
     )
     .finalize(components::low_level_debug_component_static!());
 
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    let dummysvc_binary = contsvc::ContSvcBinary::find(
+        "dummysvc",
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ),
+    )
+    .unwrap();
+
+    let dummysvc = contsvc::ContSvc::new(
+        dummysvc_binary,
+        &_dsvcram_start as *const u8 as *mut u8,
+        &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+    )
+    .unwrap();
+
+    dummysvc.invoke_service(0x00080080 as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+    // dummysvc.invoke_service(0x80100080 as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+
     debug!("Verilated LiteX+VexRiscv: initialization complete, entering main loop.");
 
     // These symbols are defined in the linker script.

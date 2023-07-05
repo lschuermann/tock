@@ -1,0 +1,9 @@
+[package]
+name = "contsvc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+kernel = { path = "../kernel" }
+tock-tbf = { path = "../libraries/tock-tbf" }

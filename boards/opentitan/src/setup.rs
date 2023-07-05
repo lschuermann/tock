@@ -24,7 +24,7 @@ use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
 use kernel::platform::{KernelResources, SyscallDriverLookup, TbfHeaderFilterDefaultAllow};
 use kernel::scheduler::priority::PrioritySched;
 use kernel::syscall::SyscallDriver;
-use kernel::utilities::registers::interfaces::ReadWriteable;
+use kernel::utilities::registers::interfaces::{ReadWriteable, Readable};
 use kernel::{create_capability, debug, static_init};
 use rv32i::csr;
 

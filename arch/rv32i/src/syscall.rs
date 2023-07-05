@@ -458,7 +458,7 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           lw   t0, 1*4(sp)
           sw   t0, 18*4(s3)
 
-          // We also need to store the app stack pointer, mcause, and mepc:
+          // We also need to store a few CSRs:
           //
           // We store mepc persistently because it is where we need to return to
           // the app at some point.
@@ -496,7 +496,7 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // continue execution in this context switch code:
           lui  t0, %hi(300f)
           addi t0, t0, %lo(300f)
-          csrw 0x341, t0    // CSR=0x341=mepc
+          csrw mepc, t0
 
           // Need to set mstatus.MPP to 0b11 so that we stay in machine mode.
           csrr t0, 0x300    // CSR=0x300=mstatus
