@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-use crate::tests::run_kernel_op;
 use crate::setup::PERIPHERALS;
+use crate::tests::run_kernel_op;
 use core::cell::Cell;
 #[allow(unused_imports)] // Can be unused if software only test
 use kernel::hil::digest::DigestData;

@@ -6,12 +6,12 @@
 
 use core::ops::{Index, IndexMut};
 
+use crate::top_earlgrey::{TOP_EARLGREY_GPIO_BASE_ADDR, TOP_EARLGREY_PINMUX_AON_BASE_ADDR};
 use kernel::utilities::StaticRef;
 pub use lowrisc::gpio::GpioPin;
 pub use lowrisc::gpio::Pin;
 use lowrisc::registers::gpio_regs::GpioRegisters;
 use lowrisc::registers::pinmux_regs::PinmuxRegisters;
-use crate::top_earlgrey::{TOP_EARLGREY_GPIO_BASE_ADDR, TOP_EARLGREY_PINMUX_AON_BASE_ADDR};
 
 pub const PADCTRL_BASE: StaticRef<PinmuxRegisters> =
     unsafe { StaticRef::new(TOP_EARLGREY_PINMUX_AON_BASE_ADDR as *const PinmuxRegisters) };

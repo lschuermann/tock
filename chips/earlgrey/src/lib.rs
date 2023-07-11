@@ -26,6 +26,6 @@ pub mod plic;
 pub mod pwrmgr;
 pub mod spi_host;
 pub mod timer;
+pub mod top_earlgrey;
 pub mod uart;
 pub mod usbdev;
-pub mod top_earlgrey;

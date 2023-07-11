@@ -6,6 +6,7 @@
 //!
 //! <https://docs.opentitan.org/hw/ip/aes/doc/>
 
+use crate::top_earlgrey::TOP_EARLGREY_AES_BASE_ADDR;
 use core::cell::Cell;
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
@@ -18,7 +19,6 @@ use kernel::utilities::registers::{
 };
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
-use crate::top_earlgrey::TOP_EARLGREY_AES_BASE_ADDR;
 
 const MAX_LENGTH: usize = 128;
 

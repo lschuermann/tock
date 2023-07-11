@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
+use crate::top_earlgrey::TOP_EARLGREY_OTBN_BASE_ADDR;
 use kernel::utilities::StaticRef;
 use lowrisc::otbn::OtbnRegisters;
-use crate::top_earlgrey::TOP_EARLGREY_OTBN_BASE_ADDR;
 
 pub const OTBN_BASE: StaticRef<OtbnRegisters> =
     unsafe { StaticRef::new(TOP_EARLGREY_OTBN_BASE_ADDR as *const OtbnRegisters) };
-

@@ -5,6 +5,7 @@
 //! Timer driver.
 
 use crate::chip_config::CONFIG;
+use crate::top_earlgrey::TOP_EARLGREY_RV_TIMER_BASE_ADDR;
 use kernel::hil::time::{self, Ticks64};
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::registers::interfaces::{Readable, Writeable};
@@ -12,7 +13,6 @@ use kernel::utilities::registers::{register_bitfields, register_structs, ReadWri
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
 use rv32i::machine_timer::MachineTimer;
-use crate::top_earlgrey::TOP_EARLGREY_RV_TIMER_BASE_ADDR;
 
 const PRESCALE: u16 = ((CONFIG.cpu_freq / 10_000) - 1) as u16; // 10Khz
 
