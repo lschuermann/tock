@@ -566,7 +566,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
 
     fn setup_mpu(&self) {
         self.mpu_config.map(|config| {
-            self.chip.mpu().configure_mpu(&config, &self.processid());
+            self.chip.mpu().configure_mpu(&config);
         });
     }
 
@@ -655,7 +655,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
                 } else {
                     let old_break = self.app_break.get();
                     self.app_break.set(new_break);
-                    self.chip.mpu().configure_mpu(&config, &self.processid());
+                    self.chip.mpu().configure_mpu(&config);
                     Ok(old_break)
                 }
             })
@@ -1468,7 +1468,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         // Otherwise, actually load the app.
         let process_ram_requested_size = tbf_header.get_minimum_app_ram_size() as usize;
         // Initialize MPU region configuration.
-        let mut mpu_config: <<C as Chip>::MPU as MPU>::MpuConfig = Default::default();
+        let mut mpu_config = chip.mpu().new_config();
 
         // Allocate MPU region for flash.
         if chip
@@ -1839,7 +1839,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         // both create() and reset(), but process load debugging complicates
         // this. We just want to create new config with only flash and memory
         // regions.
-        let mut mpu_config: <<C as Chip>::MPU as MPU>::MpuConfig = Default::default();
+        let mut mpu_config = self.chip.mpu().new_config();
         // Allocate MPU region for flash.
         let app_mpu_flash = self.chip.mpu().allocate_region(
             self.flash.as_ptr(),
