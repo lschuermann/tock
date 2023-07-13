@@ -481,6 +481,7 @@ pub unsafe fn main() {
     .unwrap();
 
     let dummysvc = contsvc::ContSvc::new(
+        chip,
         dummysvc_binary,
         &_dsvcram_start as *const u8 as *mut u8,
         &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
