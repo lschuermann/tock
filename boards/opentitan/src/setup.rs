@@ -20,8 +20,6 @@ use kernel::hil::led::LedHigh;
 use kernel::hil::rng::Rng;
 use kernel::hil::symmetric_encryption::AES128;
 use kernel::hil::symmetric_encryption::AES128_BLOCK_SIZE;
-use kernel::platform::mpu;
-use kernel::platform::mpu::KernelMPU;
 use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
 use kernel::platform::{KernelResources, SyscallDriverLookup, TbfHeaderFilterDefaultAllow};
 use kernel::scheduler::priority::PrioritySched;
@@ -358,8 +356,57 @@ pub unsafe fn setup() -> (
     &'static earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripherals<'static>>,
     &'static EarlGreyDefaultPeripherals<'static>,
 ) {
+    // These symbols are defined in the linker script.
+    extern "C" {
+        /// Beginning of the ROM region containing app images.
+        static _sapps: u8;
+        /// End of the ROM region containing app images.
+        static _eapps: u8;
+        /// Beginning of the RAM region for app memory.
+        static mut _sappmem: u8;
+        /// End of the RAM region for app memory.
+        static _eappmem: u8;
+        /// The start of the kernel text (Included only for kernel PMP)
+        static _stext: u8;
+        /// The end of the kernel text (Included only for kernel PMP)
+        static _etext: u8;
+        /// The start of the kernel / app / storage flash (Included only for kernel PMP)
+        static _sflash: u8;
+        /// The end of the kernel / app / storage flash (Included only for kernel PMP)
+        static _eflash: u8;
+        /// The start of the kernel / app RAM (Included only for kernel PMP)
+        static _ssram: u8;
+        /// The end of the kernel / app RAM (Included only for kernel PMP)
+        static _esram: u8;
+        /// The start of the OpenTitan manifest
+        static _manifest: u8;
+    }
+
     // Ibex-specific handler
     earlgrey::chip::configure_trap_handler();
+
+    // Set up memory protection immediately after setting the trap handler, to
+    // ensure that much of the board initialization routine runs with ePMP
+    // protection.
+    let earlgrey_epmp = unsafe {
+        earlgrey::epmp::EarlGreyEPMP::new(
+            // flash
+            (
+                &_sflash as *const u8,
+                &_eflash as *const u8 as usize - &_sflash as *const u8 as usize,
+            ),
+            // ram
+            (
+                &_ssram as *const u8,
+                &_esram as *const u8 as usize - &_ssram as *const u8 as usize,
+            ),
+            // mmio
+            (0x40000000 as *const u8, 0x10000000),
+            // kernel .text
+            (&_stext as *const u8, &_etext as *const u8),
+        )
+        .unwrap()
+    };
 
     // initialize capabilities
     let process_mgmt_cap = create_capability!(capabilities::ProcessManagementCapability);
@@ -465,7 +512,7 @@ pub unsafe fn setup() -> (
         earlgrey::chip::EarlGrey<
             EarlGreyDefaultPeripherals,
         >,
-        earlgrey::chip::EarlGrey::new(peripherals, hardware_alarm)
+        earlgrey::chip::EarlGrey::new(peripherals, hardware_alarm, earlgrey_epmp)
     );
     CHIP = Some(chip);
 
@@ -673,38 +720,6 @@ pub unsafe fn setup() -> (
     hil::symmetric_encryption::AES128CCM::set_client(ccm_client1, aes);
     hil::symmetric_encryption::AES128::set_client(ccm_client1, aes);
 
-    // These symbols are defined in the linker script.
-    extern "C" {
-        /// Beginning of the ROM region containing app images.
-        static _sapps: u8;
-        /// End of the ROM region containing app images.
-        static _eapps: u8;
-        /// Beginning of the RAM region for app memory.
-        static mut _sappmem: u8;
-        /// End of the RAM region for app memory.
-        static _eappmem: u8;
-        /// The start of the kernel stack (Included only for kernel PMP)
-        static _sstack: u8;
-        /// The end of the kernel stack (Included only for kernel PMP)
-        static _estack: u8;
-        /// The start of the kernel text (Included only for kernel PMP)
-        static _stext: u8;
-        /// The end of the kernel text (Included only for kernel PMP)
-        static _etext: u8;
-        /// The start of the kernel relocation region
-        /// (Included only for kernel PMP)
-        static _srelocate: u8;
-        /// The end of the kernel relocation region
-        /// (Included only for kernel PMP)
-        static _erelocate: u8;
-        /// The start of the kernel BSS (Included only for kernel PMP)
-        static _szero: u8;
-        /// The end of the kernel BSS (Included only for kernel PMP)
-        static _ezero: u8;
-        /// The start of the OpenTitan manifest
-        static _manifest: u8;
-    }
-
     let syscall_filter = static_init!(TbfHeaderFilterDefaultAllow, TbfHeaderFilterDefaultAllow {});
     let scheduler = components::sched::priority::PriorityComponent::new(board_kernel)
         .finalize(components::priority_component_static!());
@@ -729,52 +744,6 @@ pub unsafe fn setup() -> (
             scheduler_timer,
         }
     );
-
-    let mut mpu_config = rv32i::epmp::PMPConfig::default();
-    // The kernel stack
-    chip.pmp.allocate_kernel_region(
-        &_sstack as *const u8,
-        &_estack as *const u8 as usize - &_sstack as *const u8 as usize,
-        mpu::Permissions::ReadWriteOnly,
-        &mut mpu_config,
-    );
-    // The kernel text
-    chip.pmp.allocate_kernel_region(
-        &_stext as *const u8,
-        &_etext as *const u8 as usize - &_stext as *const u8 as usize,
-        mpu::Permissions::ReadExecuteOnly,
-        &mut mpu_config,
-    );
-    // The kernel relocate data
-    chip.pmp.allocate_kernel_region(
-        &_srelocate as *const u8,
-        &_erelocate as *const u8 as usize - &_srelocate as *const u8 as usize,
-        mpu::Permissions::ReadWriteOnly,
-        &mut mpu_config,
-    );
-    // The kernel BSS
-    chip.pmp.allocate_kernel_region(
-        &_szero as *const u8,
-        &_ezero as *const u8 as usize - &_szero as *const u8 as usize,
-        mpu::Permissions::ReadWriteOnly,
-        &mut mpu_config,
-    );
-    // The app locations
-    chip.pmp.allocate_kernel_region(
-        &_sapps as *const u8,
-        &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-        mpu::Permissions::ReadWriteOnly,
-        &mut mpu_config,
-    );
-    // The app memory locations
-    chip.pmp.allocate_kernel_region(
-        &_sappmem as *const u8,
-        &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
-        mpu::Permissions::ReadWriteOnly,
-        &mut mpu_config,
-    );
-
-    //chip.pmp.enable_kernel_mpu(&mut mpu_config);
 
     kernel::process::load_processes(
         board_kernel,

@@ -1020,7 +1020,7 @@ impl<'a, const COMMAND_HISTORY_LEN: usize, A: Alarm<'a>, C: ProcessManagementCap
                                 if let Some(index) = match read_buf[0] {
                                     // Up arrow case
                                     b'A' => {
-                                        let i = match self.command_history_index.extract() {
+                                        let i = match self.command_history_index.get() {
                                             Some(i) => i + 1,
                                             None => 1,
                                         };
@@ -1060,7 +1060,7 @@ impl<'a, const COMMAND_HISTORY_LEN: usize, A: Alarm<'a>, C: ProcessManagementCap
                                         }
                                     }
                                     // Down arrow case
-                                    b'B' => match self.command_history_index.extract() {
+                                    b'B' => match self.command_history_index.get() {
                                         Some(i) => match i > 0 {
                                             true => {
                                                 // Remove last whitespace byte from the command

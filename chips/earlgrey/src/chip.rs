@@ -9,17 +9,18 @@ use kernel;
 use kernel::platform::chip::{Chip, InterruptService};
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use rv32i::csr::{mcause, mie::mie, mtvec::mtvec, CSR};
-use rv32i::epmp::PMP;
+use rv32i::pmp::PMPUserMPU;
 use rv32i::syscall::SysCall;
 
 use crate::chip_config::CONFIG;
+use crate::epmp::EarlGreyEPMP;
 use crate::interrupts;
 use crate::plic::Plic;
 use crate::plic::PLIC;
 
 pub struct EarlGrey<'a, I: InterruptService + 'a> {
     userspace_kernel_boundary: SysCall,
-    pub pmp: PMP<8>,
+    pub mpu: PMPUserMPU<5, EarlGreyEPMP>,
     plic: &'a Plic,
     timer: &'static crate::timer::RvTimer<'static>,
     pwrmgr: lowrisc::pwrmgr::PwrMgr,
@@ -124,10 +125,11 @@ impl<'a, I: InterruptService + 'a> EarlGrey<'a, I> {
     pub unsafe fn new(
         plic_interrupt_service: &'a I,
         timer: &'static crate::timer::RvTimer,
+        epmp: EarlGreyEPMP,
     ) -> Self {
         Self {
             userspace_kernel_boundary: SysCall::new(),
-            pmp: PMP::new(),
+            mpu: PMPUserMPU::new(epmp),
             plic: &PLIC,
             pwrmgr: lowrisc::pwrmgr::PwrMgr::new(crate::pwrmgr::PWRMGR_BASE),
             timer,
@@ -226,11 +228,11 @@ impl<'a, I: InterruptService + 'a> EarlGrey<'a, I> {
 }
 
 impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for EarlGrey<'a, I> {
-    type MPU = PMP<8>;
+    type MPU = PMPUserMPU<5, EarlGreyEPMP>;
     type UserspaceKernelBoundary = SysCall;
 
     fn mpu(&self) -> &Self::MPU {
-        &self.pmp
+        &self.mpu
     }
 
     fn userspace_kernel_boundary(&self) -> &SysCall {
@@ -281,7 +283,7 @@ impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for EarlGrey<'a,
             CONFIG.name
         ));
         rv32i::print_riscv_state(writer);
-        let _ = writer.write_fmt(format_args!("{}", self.pmp));
+        let _ = writer.write_fmt(format_args!("{}", self.mpu.pmp));
     }
 }
 
