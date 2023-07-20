@@ -6,7 +6,7 @@
 
 #![crate_name = "rv32i"]
 #![crate_type = "rlib"]
-#![feature(naked_functions)]
+#![feature(naked_functions, nonzero_min_max)]
 #![no_std]
 
 use core::fmt::Write;
