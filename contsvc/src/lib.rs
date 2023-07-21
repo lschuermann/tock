@@ -183,6 +183,7 @@ impl<'c, C: Chip> ContSvc<'c, C> {
 
         // Make sure we have at least enough data to parse the header:
         if binary.binary_length < CONTSVC_HEADER_LEN {
+            panic!("Does not fit header");
             return Err(());
         }
 
@@ -200,24 +201,28 @@ impl<'c, C: Chip> ContSvc<'c, C> {
 
         // Read the header fields in native endianness. First, check the magic:
         if extract_header_word(header_slice, CONTSVC_HEADER_MAGIC_OFFSET) != CONTSVC_HEADER_MAGIC {
+            panic!("MAGIC mismatch");
             return Err(());
         }
 
         let rthdr_offset =
             extract_header_word(header_slice, CONTSVC_HEADER_RTHDR_PTR_OFFSET) as usize;
         if rthdr_offset > binary.binary_length - core::mem::size_of::<u32>() {
+            panic!("rthdr_offset");
             return Err(());
         }
 
         let init_offset =
             extract_header_word(header_slice, CONTSVC_HEADER_INIT_PTR_OFFSET) as usize;
         if init_offset > binary.binary_length - core::mem::size_of::<u32>() {
+            panic!("init_offset");
             return Err(());
         }
 
         let fntab_offset =
             extract_header_word(header_slice, CONTSVC_HEADER_FNTAB_PTR_OFFSET) as usize;
         if fntab_offset > binary.binary_length - core::mem::size_of::<u32>() {
+            panic!("fntab_offset");
             return Err(());
         }
 
@@ -245,7 +250,7 @@ impl<'c, C: Chip> ContSvc<'c, C> {
             .unwrap();
 
         // chip.mpu().configure_mpu(&mpu_config);
-        let mut mpu_config = chip.mpu().new_config();
+        // let mut mpu_config = chip.mpu().new_config();
         
 
         // panic!("PMPConfig: {}", &mpu_config);
@@ -755,7 +760,10 @@ impl<'c, C: Chip> ContSvc<'c, C> {
     pub fn init(&self) -> Result<(), ()> {
         // panic!("Init offset: {}", self.init_offset);
         let (a0, _) = self.invoke_service(unsafe { self.binary.binary_start.add(self.init_offset) } as *const fn(), unsafe { self.binary.binary_start.add(self.rthdr_offset) } as usize, 0, 0, 0, 0, 0, 0, 0).unwrap();
-        panic!("Init done: {}", a0);
-        Ok(())
+        if a0 != 0 {
+            panic!("Init failed: {}", a0);
+        } else {
+            Ok(())
+        }
     }
 }

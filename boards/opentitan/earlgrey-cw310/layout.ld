@@ -1,10 +1,10 @@
 MEMORY
 {
-  rom   (rx)  : ORIGIN = 0x20000000, LENGTH = 0x30000
+  rom   (rx)  : ORIGIN = 0x20000000, LENGTH = 0x50000
   /* Support up to 0x2009_0000 for apps
    * and 0x2009_0000 to 0x2010_0000 is for flash storage.
    */
-  prog  (rx)  : ORIGIN = 0x20030000, LENGTH = 0x60000
+  prog  (rx)  : ORIGIN = 0x20050000, LENGTH = 0x40000
   /* Explicitly define the flash storage region such that we can
    * export the full flash address space through symbols.
    * (fs = FlashStorage)

@@ -85,7 +85,7 @@ pub(crate) const FAULT_RESPONSE: kernel::process::PanicFaultPolicy =
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
-pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
+pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform. We've included an alarm and console.
@@ -398,7 +398,7 @@ pub unsafe fn setup() -> (
             // ram
             (
                 &_ssram as *const u8,
-                &_esram as *const u8 as usize - &_ssram as *const u8 as usize,
+                &_esram as *const u8 as usize - &_ssram as *const u8 as usize + 0x8000,
             ),
             // mmio
             (0x40000000 as *const u8, 0x10000000),
@@ -764,7 +764,37 @@ pub unsafe fn setup() -> (
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
-    debug!("OpenTitan initialisation complete. Entering main loop");
+
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    // panic!("Pre-parse binary!");
+
+    let dummysvc_binary = contsvc::ContSvcBinary::find(
+        "cryptolib_cmpsvc",
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ),
+    )
+    .unwrap();
+
+    // panic!("Parsed binary header!");
+
+    let dummysvc = contsvc::ContSvc::new(
+        chip,
+        dummysvc_binary,
+        &_dsvcram_start as *const u8 as *mut u8,
+        &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+    )
+    .unwrap();
+
+    let res = dummysvc.invoke_service(0x200a00ea as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+
+    debug!("OpenTitan initialisation complete. Entering main loop: {:?}", res);
 
     (board_kernel, earlgrey, chip, peripherals)
 }
