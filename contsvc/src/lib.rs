@@ -1,7 +1,9 @@
 #![no_std]
 
 use core::ops::Range;
+use core::cell::Cell;
 
+use kernel::ErrorCode;
 use kernel::platform::chip::Chip;
 use kernel::platform::mpu::{self, MPU};
 use kernel::utilities::cells::MapCell;
@@ -119,6 +121,7 @@ pub struct ContSvc<'c, C: Chip> {
     fntab_offset: usize,
 
     stack_top: *mut u8,
+    stack_ptr: Cell<*mut u8>,
 
     chip: &'c C,
 
@@ -248,12 +251,18 @@ impl<'c, C: Chip> ContSvc<'c, C> {
                 &mut mpu_config,
             )
             .unwrap();
+        chip.mpu()
+            .allocate_region(
+                0x40000000 as *const u8,
+                0x10000000,
+                0x10000000,
+                mpu::Permissions::ReadWriteOnly,
+                &mut mpu_config,
+            )
+            .unwrap();
 
-        // chip.mpu().configure_mpu(&mpu_config);
-        // let mut mpu_config = chip.mpu().new_config();
-        
 
-        // panic!("PMPConfig: {}", &mpu_config);
+        let stack_top = unsafe { ram_region_start.offset(ram_region_len as isize) };
 
         // All header fields parsed, we can construct the `ContSvc` struct and
         // try to initialize the service:
@@ -265,7 +274,8 @@ impl<'c, C: Chip> ContSvc<'c, C> {
             init_offset,
             fntab_offset,
 
-            stack_top: unsafe { ram_region_start.offset(ram_region_len as isize) },
+            stack_top,
+            stack_ptr: Cell::new(stack_top),
 
             chip,
             mpu_config,
@@ -274,6 +284,60 @@ impl<'c, C: Chip> ContSvc<'c, C> {
         contsvc.init()?;
 
         Ok(contsvc)
+    }
+
+    pub fn allocate_stacked<F, R>(&self, size: usize, align: usize, fun: F) -> Result<R, ErrorCode>
+        where F: FnOnce(*mut u8) -> R 
+    {
+        // TODO: horribly unsafe
+        let original_stack_ptr = self.stack_ptr.get();
+        let size_stack_ptr = unsafe { original_stack_ptr.wrapping_sub(size) };
+        let align_stack_ptr = ((size_stack_ptr as usize) - (size_stack_ptr as usize % align)) as *mut u8;
+
+        if (align_stack_ptr as usize) < (self.ram_region_start as usize) {
+            Err(ErrorCode::NOMEM)
+        } else {
+            self.stack_ptr.set(align_stack_ptr);
+            let res = fun(align_stack_ptr);
+            self.stack_ptr.set(original_stack_ptr);
+            Ok(res)
+        }
+    }
+
+    pub fn allocate_stacked_t<T: Sized, F, R>(&self, fun: F) -> Result<R, ErrorCode>
+    where F: FnOnce(*mut T) -> R 
+    {
+        self.allocate_stacked(core::mem::size_of::<T>(), core::mem::align_of::<T>(), |allocated_ptr| {
+            fun(allocated_ptr as *mut T)
+        })
+    }
+
+    pub fn allocate_stacked_array<const N: usize, T: Sized, F, R>(&self, fun: F) -> Result<R, ErrorCode>
+    where F: FnOnce(*mut [T; N]) -> R 
+    {
+        self.allocate_stacked(core::mem::size_of::<T>() * N, core::mem::align_of::<T>(), |allocated_ptr| {
+            fun(allocated_ptr as *mut [T; N])
+        })
+    }
+
+    pub fn allocate_stacked_slice<T, F, R>(&self, len: usize, fun: F) -> Result<R, ErrorCode>
+    where F: FnOnce(*mut [T]) -> R 
+    {
+        self.allocate_stacked(core::mem::size_of::<T>() * len, core::mem::align_of::<T>(), |allocated_ptr| {
+            fun(unsafe { core::slice::from_raw_parts_mut(allocated_ptr as *mut T, len) } as *mut [T])
+        })
+    }
+
+    pub fn resolve_function_pointer(&self, function_index: usize) -> Option<*const fn()> {
+        const FNPTR_SIZE: usize = core::mem::size_of::<*const fn ()>();
+
+        let fnptr_offset = self.fntab_offset + (function_index * FNPTR_SIZE);
+        if fnptr_offset + FNPTR_SIZE <= self.binary.binary_length {
+            let fnptr_slice = unsafe { core::slice::from_raw_parts((self.binary.binary_start as usize + fnptr_offset) as *const u8, FNPTR_SIZE) };
+            Some(u32::from_ne_bytes([fnptr_slice[0], fnptr_slice[1], fnptr_slice[2], fnptr_slice[3]]) as *const fn())
+        } else {
+            None
+        }
     }
 
     // TODO: make private
@@ -288,14 +352,24 @@ impl<'c, C: Chip> ContSvc<'c, C> {
         mut a5: usize,
         mut a6: usize,
         mut a7: usize,
+        init: bool,
     ) -> Result<(usize, usize), ()> {
         use core::arch::asm;
+
+        // Make sure that the stack is always aligned to a multiple of 4 words
+        // (16 bytes). Try to move it downward to achieve alignment. If this
+        // doesn't fit, return an error accordingly:
+        let original_stack_ptr = self.stack_ptr.get();
+        let aligned_stack_ptr = ((original_stack_ptr as usize) - (original_stack_ptr as usize % 16)) as *mut u8;
+        if (aligned_stack_ptr as usize) < (self.ram_region_start as usize) {
+            return Err(());
+        }
 
         self.chip.mpu().configure_mpu(&self.mpu_config);
         self.chip.mpu().enable_app_mpu();
 
         let mut service_pc: u32 = fun as u32;
-        let mut service_sp: u32 = self.stack_top as u32;
+        let mut service_sp: u32 = aligned_stack_ptr as u32;
         let mut service_mcause: u32;
         let mut service_mtval: u32;
         let mut return_to_kernel_addr: u32;
@@ -731,6 +805,26 @@ impl<'c, C: Chip> ContSvc<'c, C> {
 
         self.chip.mpu().disable_app_mpu();
 
+        // if !init {
+        // panic!(
+        //         "Service returned! a0: {:08x}, pc: {:p}, sp: {:p}, mcause: \
+        //          {:08x}, mtval: {:08x}, rettokern: {:08x}, PMPConfig: {}, \
+        //          stack_top: {:p}",
+        //         a0,
+        //         service_pc as *const u8,
+        //         service_sp as *const u8,
+        //         service_mcause,
+        //         service_mtval,
+        // 	return_to_kernel_addr,
+        //         self.mpu_config,
+        //     self.stack_top,
+        // );
+        // }
+
+
+        // Reset the stack pointer:
+        self.stack_ptr.set(original_stack_ptr);
+
         // Check whether we returned from the service because it voluntarily
         // ceased control (e.g. `ecall` INSN or Instruction Access Fault when
         // trying to jump to `ecall`), or whether it faulted:
@@ -759,7 +853,7 @@ impl<'c, C: Chip> ContSvc<'c, C> {
 
     pub fn init(&self) -> Result<(), ()> {
         // panic!("Init offset: {}", self.init_offset);
-        let (a0, _) = self.invoke_service(unsafe { self.binary.binary_start.add(self.init_offset) } as *const fn(), unsafe { self.binary.binary_start.add(self.rthdr_offset) } as usize, 0, 0, 0, 0, 0, 0, 0).unwrap();
+        let (a0, _) = self.invoke_service(unsafe { self.binary.binary_start.add(self.init_offset) } as *const fn(), unsafe { self.binary.binary_start.add(self.rthdr_offset) } as usize, 0, 0, 0, 0, 0, 0, 0, true).unwrap();
         if a0 != 0 {
             panic!("Init failed: {}", a0);
         } else {

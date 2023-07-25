@@ -16,7 +16,7 @@ kernel = { path = "../../../kernel" }
 earlgrey = { path = "../../../chips/earlgrey" }
 lowrisc = { path = "../../../chips/lowrisc" }
 tock-tbf = { path = "../../../libraries/tock-tbf" }
-contscv = { path = "../../../contsvc" }
+contsvc = { path = "../../../contsvc" }
 
 capsules-core = { path = "../../../capsules/core" }
 capsules-extra = { path = "../../../capsules/extra" }

@@ -10,6 +10,8 @@
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(earlgrey_test_runner)]
 
+#[allow(dead_code, non_upper_case_globals, non_camel_case_types)]
+pub mod cryptolib_mac;
 pub mod io;
 pub mod otbn;
 pub mod setup;

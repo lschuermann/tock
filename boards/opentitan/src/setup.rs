@@ -784,7 +784,7 @@ pub unsafe fn setup() -> (
 
     // panic!("Parsed binary header!");
 
-    let dummysvc = contsvc::ContSvc::new(
+    let cryptosvc = contsvc::ContSvc::new(
         chip,
         dummysvc_binary,
         &_dsvcram_start as *const u8 as *mut u8,
@@ -792,9 +792,165 @@ pub unsafe fn setup() -> (
     )
     .unwrap();
 
-    let res = dummysvc.invoke_service(0x200a00ea as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+    let mut tag = [0_u32; 8];
 
-    debug!("OpenTitan initialisation complete. Entering main loop: {:?}", res);
+    // let (fnptr, res) =
+    //     dummysvc.allocate_stacked_t::<crate::cryptolib_mac::crypto_blinded_key_t, _, _>(|blinded_key| {
+    //         dummysvc.allocate_stacked(32, 4, |tagblob| {
+    // 	// { 
+    // 	//     let bk: &mut crate::cryptolib_mac::crypto_blinded_key_t  = unsafe { &mut *blinded_key };
+    // 	//     bk.keyblob = keyblob as *mut u32;
+    // 	//     bk.keyblob_length = 64;
+    // 	// }
+
+    // 	let fnptr = dummysvc.resolve_function_pointer(7).unwrap();
+    // 	let res = dummysvc.invoke_service(fnptr, tagblob as usize, 0, 0, 0, 0, 0, 0, 0, false);
+    // 	tag.copy_from_slice(unsafe { core::slice::from_raw_parts(tagblob, 32) });
+    // 	(fnptr, res)
+    //         }).unwrap()
+    //     }).unwrap();
+
+    // debug!("OpenTitan initialisation complete. Entering main loop: {:p} {:?} {:02x?}", fnptr, res, tag);
+            
+
+    let res =
+        cryptosvc.allocate_stacked_t::<crate::cryptolib_mac::crypto_blinded_key_t, _, _>(|blinded_key_ptr| {
+            // Set the blinded key config prior to calling the `keyblob_num_words` helper:
+            let config_ptr = {
+	let blinded_key: &mut crate::cryptolib_mac::crypto_blinded_key_t  = unsafe { &mut *blinded_key_ptr };
+
+	// Set the blinded key config first:
+	blinded_key.config = crate::cryptolib_mac::crypto_key_config {
+	    version: crate::cryptolib_mac::crypto_lib_version_kCryptoLibVersion1,
+	    key_mode: crate::cryptolib_mac::key_mode_kKeyModeHmacSha256,
+	    key_length: 32, // HMAC-SHA256
+	    hw_backed: crate::cryptolib_mac::hardened_bool_kHardenedBoolFalse,
+	    diversification_hw_backed: crate::cryptolib_mac::crypto_const_uint8_buf_t {
+	        data: core::ptr::null(),
+	        len: 0,
+	    },
+	    exportable: crate::cryptolib_mac::hardened_bool_kHardenedBoolFalse,
+	    security_level: crate::cryptolib_mac::crypto_key_security_level_kSecurityLevelLow,
+	};
+
+	&mut blinded_key.config as *mut crate::cryptolib_mac::crypto_key_config
+            };
+
+            let (keyblob_words, _) = cryptosvc.invoke_service(
+	// keyblob_num_words (wrapped)
+	cryptosvc.resolve_function_pointer(1).unwrap(),
+	blinded_key_ptr as usize, 0, 0, 0, 0, 0, 0, 0, false
+            ).unwrap();
+
+            cryptosvc.allocate_stacked_array::<17, u32, _, _>(|test_mask_ptr| {
+	{
+	    (unsafe { &mut *test_mask_ptr }).copy_from_slice(&[
+	        0x8cb847c3, 0xc6d34f36, 0x72edbf7b, 0x9bc0317f, 0x8f003c7f, 0x1d7ba049,
+	        0xfd463b63, 0xbb720c44, 0x784c215e, 0xeb101d65, 0x35beb911, 0xab481345,
+	        0xa7ebc3e3, 0x04b2a1b9, 0x764a9630, 0x78b8f9c5, 0x3f2a1d8e,
+	    ]);
+	}
+
+	cryptosvc.allocate_stacked_array::<8, u32, _, _>(|test_key_ptr| {
+	    {
+	        (unsafe { &mut *test_key_ptr }).copy_from_slice(&[
+	            0xea10ff1b, 0x04b2b9a5, 0x2a23f3d6, 0x518e3e57,
+	            0xc3687ba2, 0xea6d3619, 0xb0916bf2, 0x347a2f71,
+	        ]);
+	    }
+
+	    cryptosvc.allocate_stacked_slice::<u32, _, _>(keyblob_words, |keyblob_slice_ptr| {
+	        let keyblob_res =  cryptosvc.invoke_service(
+	            // keyblob_from_key_and_mask (wrapped)
+	            cryptosvc.resolve_function_pointer(5).unwrap(),
+	            test_key_ptr as *mut u32 as usize,
+	            test_mask_ptr as *mut u32 as usize,
+	            config_ptr as usize,
+	            keyblob_slice_ptr as *mut u32 as usize,
+	            0, 0, 0, 0, false
+	        ).unwrap();
+
+	        {
+	            let blinded_key: &mut crate::cryptolib_mac::crypto_blinded_key_t  = unsafe { &mut *blinded_key_ptr };
+	            blinded_key.keyblob = keyblob_slice_ptr as *mut u32;
+	            blinded_key.keyblob_length = keyblob_words * core::mem::size_of::<u32>();
+	            blinded_key.checksum = 0;
+	        }
+	         
+	        let (checksum, _) =  cryptosvc.invoke_service(
+	            // integrity_blinded_checksum
+	            cryptosvc.resolve_function_pointer(14).unwrap(),
+	            blinded_key_ptr as usize,
+	            0, 0, 0, 0, 0, 0, 0, false
+	        ).unwrap();
+
+	        {
+	            let blinded_key: &mut crate::cryptolib_mac::crypto_blinded_key_t  = unsafe { &mut *blinded_key_ptr };
+	            blinded_key.checksum = checksum as u32;
+	        }
+	        
+	        cryptosvc.allocate_stacked_array::<{256 / 32}, u32, _, _>(|act_tag_ptr| {
+	            cryptosvc.allocate_stacked_t::<crate::cryptolib_mac::crypto_uint8_buf_t, _, _>(|tag_buf_ptr| {
+		{
+		    let tag_buf: &mut crate::cryptolib_mac::crypto_uint8_buf_t = unsafe { &mut *tag_buf_ptr };
+		    tag_buf.data = act_tag_ptr as *mut u32 as *mut u8;
+		    tag_buf.len = 256 / 8;
+		}
+
+		cryptosvc.allocate_stacked_array::<13, u8, _, _>(|msg_ptr| {
+		    (unsafe { &mut *msg_ptr }).copy_from_slice(b"Test message.");
+
+		    cryptosvc.allocate_stacked_t::<crate::cryptolib_mac::crypto_uint8_buf_t, _, _>(|msg_buf_ptr| {
+		        {
+		            let msg_buf: &mut crate::cryptolib_mac::crypto_uint8_buf_t = unsafe { &mut *msg_buf_ptr };
+		            msg_buf.data = msg_ptr as *mut u8;
+		            msg_buf.len = 13;
+		        }
+
+		        let keyblob_ptr_0 = (unsafe { &* blinded_key_ptr}).keyblob;
+
+                                        let res = cryptosvc.invoke_service(
+                                            // otcrypto_hmac_wrapped
+                                            cryptosvc.resolve_function_pointer(8).unwrap(),
+                                            blinded_key_ptr as usize,
+                                            msg_buf_ptr as usize,
+                                            tag_buf_ptr as usize, 0, 0, 0, 0, 0, false
+                                        ).unwrap();
+
+		        let keyblob_ptr_1 = (unsafe { &* blinded_key_ptr}).keyblob;
+
+		        // panic!("Keyblob res: {:x?} {:x?}, Checksum: {:x?}, hmac res {:x?}, {:p} {:p} [{:p} {:p} {:p}], key mode {:?}", keyblob_res, {&*keyblob_slice_ptr}, checksum, res, blinded_key_ptr, (unsafe { &* blinded_key_ptr}).keyblob, keyblob_ptr_0, keyblob_ptr_1, keyblob_slice_ptr, &(unsafe { &* blinded_key_ptr}).config.key_mode);
+
+
+
+		        tag.copy_from_slice(unsafe { &*act_tag_ptr });
+
+		        res
+                                    }).unwrap()
+                                }).unwrap()
+                            }).unwrap()
+                        }).unwrap()
+                    }).unwrap()
+                }).unwrap()
+            }).unwrap()
+        }).unwrap();
+
+            // dummysvc.allocate_stacked(64, 4, |tagblob| { // 
+            // 	// { 
+            // 	//     let bk: &mut crate::cryptolib_mac::crypto_blinded_key_t  = unsafe { &mut *blinded_key };
+            // 	//     bk.keyblob = keyblob as *mut u32;
+            // 	//     bk.keyblob_length = 64;
+            // 	// }
+
+            // 	let fnptr = dummysvc.resolve_function_pointer(7).unwrap();
+            // 	let res = dummysvc.invoke_service(fnptr, tagblob as usize, 0, 0, 0, 0, 0, 0, 0, false);
+            // 	tag.copy_from_slice(unsafe { core::slice::from_raw_parts(tagblob, 32) });
+            // 	(fnptr, res)
+            // }).unwrap()
+
+
+    debug!("OpenTitan initialisation complete. Entering main loop: {:?} {:02x?}", res, tag);
+
 
     (board_kernel, earlgrey, chip, peripherals)
 }
