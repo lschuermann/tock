@@ -123,7 +123,7 @@ impl<'a, T> LeasableMutableBuffer<'a, T> {
         self.active_range = 0..self.internal.len();
     }
 
-    fn active_slice(&self) -> &[T] {
+    pub fn active_slice(&self) -> &[T] {
         &self.internal[self.active_range.clone()]
     }
 
@@ -208,7 +208,7 @@ impl<'a, T> LeasableBuffer<'a, T> {
         self.active_range = 0..self.internal.len();
     }
 
-    fn active_slice(&self) -> &[T] {
+    pub fn active_slice(&self) -> &[T] {
         &self.internal[self.active_range.clone()]
     }
 

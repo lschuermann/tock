@@ -1,12 +1,12 @@
 #![no_std]
 
-use core::ops::Range;
 use core::cell::Cell;
+use core::ops::Range;
 
-use kernel::ErrorCode;
 use kernel::platform::chip::Chip;
 use kernel::platform::mpu::{self, MPU};
 use kernel::utilities::cells::MapCell;
+use kernel::ErrorCode;
 
 #[derive(Copy, Clone, Debug)]
 pub struct ContSvcBinary {
@@ -261,7 +261,6 @@ impl<'c, C: Chip> ContSvc<'c, C> {
             )
             .unwrap();
 
-
         let stack_top = unsafe { ram_region_start.offset(ram_region_len as isize) };
 
         // All header fields parsed, we can construct the `ContSvc` struct and
@@ -287,12 +286,14 @@ impl<'c, C: Chip> ContSvc<'c, C> {
     }
 
     pub fn allocate_stacked<F, R>(&self, size: usize, align: usize, fun: F) -> Result<R, ErrorCode>
-        where F: FnOnce(*mut u8) -> R 
+    where
+        F: FnOnce(*mut u8) -> R,
     {
         // TODO: horribly unsafe
         let original_stack_ptr = self.stack_ptr.get();
         let size_stack_ptr = unsafe { original_stack_ptr.wrapping_sub(size) };
-        let align_stack_ptr = ((size_stack_ptr as usize) - (size_stack_ptr as usize % align)) as *mut u8;
+        let align_stack_ptr =
+            ((size_stack_ptr as usize) - (size_stack_ptr as usize % align)) as *mut u8;
 
         if (align_stack_ptr as usize) < (self.ram_region_start as usize) {
             Err(ErrorCode::NOMEM)
@@ -305,36 +306,63 @@ impl<'c, C: Chip> ContSvc<'c, C> {
     }
 
     pub fn allocate_stacked_t<T: Sized, F, R>(&self, fun: F) -> Result<R, ErrorCode>
-    where F: FnOnce(*mut T) -> R 
+    where
+        F: FnOnce(*mut T) -> R,
     {
-        self.allocate_stacked(core::mem::size_of::<T>(), core::mem::align_of::<T>(), |allocated_ptr| {
-            fun(allocated_ptr as *mut T)
-        })
+        self.allocate_stacked(
+            core::mem::size_of::<T>(),
+            core::mem::align_of::<T>(),
+            |allocated_ptr| fun(allocated_ptr as *mut T),
+        )
     }
 
-    pub fn allocate_stacked_array<const N: usize, T: Sized, F, R>(&self, fun: F) -> Result<R, ErrorCode>
-    where F: FnOnce(*mut [T; N]) -> R 
+    pub fn allocate_stacked_array<const N: usize, T: Sized, F, R>(
+        &self,
+        fun: F,
+    ) -> Result<R, ErrorCode>
+    where
+        F: FnOnce(*mut [T; N]) -> R,
     {
-        self.allocate_stacked(core::mem::size_of::<T>() * N, core::mem::align_of::<T>(), |allocated_ptr| {
-            fun(allocated_ptr as *mut [T; N])
-        })
+        self.allocate_stacked(
+            core::mem::size_of::<T>() * N,
+            core::mem::align_of::<T>(),
+            |allocated_ptr| fun(allocated_ptr as *mut [T; N]),
+        )
     }
 
     pub fn allocate_stacked_slice<T, F, R>(&self, len: usize, fun: F) -> Result<R, ErrorCode>
-    where F: FnOnce(*mut [T]) -> R 
+    where
+        F: FnOnce(*mut [T]) -> R,
     {
-        self.allocate_stacked(core::mem::size_of::<T>() * len, core::mem::align_of::<T>(), |allocated_ptr| {
-            fun(unsafe { core::slice::from_raw_parts_mut(allocated_ptr as *mut T, len) } as *mut [T])
-        })
+        self.allocate_stacked(
+            core::mem::size_of::<T>() * len,
+            core::mem::align_of::<T>(),
+            |allocated_ptr| {
+                fun(
+                    unsafe { core::slice::from_raw_parts_mut(allocated_ptr as *mut T, len) }
+                        as *mut [T],
+                )
+            },
+        )
     }
 
     pub fn resolve_function_pointer(&self, function_index: usize) -> Option<*const fn()> {
-        const FNPTR_SIZE: usize = core::mem::size_of::<*const fn ()>();
+        const FNPTR_SIZE: usize = core::mem::size_of::<*const fn()>();
 
         let fnptr_offset = self.fntab_offset + (function_index * FNPTR_SIZE);
         if fnptr_offset + FNPTR_SIZE <= self.binary.binary_length {
-            let fnptr_slice = unsafe { core::slice::from_raw_parts((self.binary.binary_start as usize + fnptr_offset) as *const u8, FNPTR_SIZE) };
-            Some(u32::from_ne_bytes([fnptr_slice[0], fnptr_slice[1], fnptr_slice[2], fnptr_slice[3]]) as *const fn())
+            let fnptr_slice = unsafe {
+                core::slice::from_raw_parts(
+                    (self.binary.binary_start as usize + fnptr_offset) as *const u8,
+                    FNPTR_SIZE,
+                )
+            };
+            Some(u32::from_ne_bytes([
+                fnptr_slice[0],
+                fnptr_slice[1],
+                fnptr_slice[2],
+                fnptr_slice[3],
+            ]) as *const fn())
         } else {
             None
         }
@@ -360,7 +388,8 @@ impl<'c, C: Chip> ContSvc<'c, C> {
         // (16 bytes). Try to move it downward to achieve alignment. If this
         // doesn't fit, return an error accordingly:
         let original_stack_ptr = self.stack_ptr.get();
-        let aligned_stack_ptr = ((original_stack_ptr as usize) - (original_stack_ptr as usize % 16)) as *mut u8;
+        let aligned_stack_ptr =
+            ((original_stack_ptr as usize) - (original_stack_ptr as usize % 16)) as *mut u8;
         if (aligned_stack_ptr as usize) < (self.ram_region_start as usize) {
             return Err(());
         }
@@ -821,7 +850,6 @@ impl<'c, C: Chip> ContSvc<'c, C> {
         // );
         // }
 
-
         // Reset the stack pointer:
         self.stack_ptr.set(original_stack_ptr);
 
@@ -843,7 +871,7 @@ impl<'c, C: Chip> ContSvc<'c, C> {
                 service_sp as *const u8,
                 service_mcause,
                 service_mtval,
-	return_to_kernel_addr,
+                return_to_kernel_addr,
                 self.mpu_config
             );
 
@@ -853,7 +881,20 @@ impl<'c, C: Chip> ContSvc<'c, C> {
 
     pub fn init(&self) -> Result<(), ()> {
         // panic!("Init offset: {}", self.init_offset);
-        let (a0, _) = self.invoke_service(unsafe { self.binary.binary_start.add(self.init_offset) } as *const fn(), unsafe { self.binary.binary_start.add(self.rthdr_offset) } as usize, 0, 0, 0, 0, 0, 0, 0, true).unwrap();
+        let (a0, _) = self
+            .invoke_service(
+                unsafe { self.binary.binary_start.add(self.init_offset) } as *const fn(),
+                unsafe { self.binary.binary_start.add(self.rthdr_offset) } as usize,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                true,
+            )
+            .unwrap();
         if a0 != 0 {
             panic!("Init failed: {}", a0);
         } else {

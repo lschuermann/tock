@@ -114,6 +114,7 @@ pub trait DigestData<'a, const L: usize> {
     /// and `add_mut_data_done` callbacks.  This is not required if
     /// using the `set_client()` fuction from the `Digest` trait.
     #[allow(unused_variables)]
+    // TODO: no default impl!
     fn set_data_client(&'a self, client: &'a dyn ClientData<L>) {}
 
     /// Add data to the input of the hash function/digest. `Ok`
