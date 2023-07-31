@@ -5,7 +5,7 @@
 use capsules_core::virtualizers::virtual_aes_ccm;
 use capsules_core::virtualizers::virtual_alarm::{MuxAlarm, VirtualMuxAlarm};
 use capsules_core::virtualizers::virtual_hmac::VirtualMuxHmac;
-use capsules_core::virtualizers::virtual_sha::VirtualMuxSha;
+// use capsules_core::virtualizers::virtual_sha::VirtualMuxSha;
 use earlgrey::chip::EarlGreyDefaultPeripherals;
 use kernel::capabilities;
 use kernel::component::Component;
@@ -101,32 +101,32 @@ pub struct EarlGrey {
         'static,
         VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>,
     >,
-    hmac: &'static capsules_extra::hmac::HmacDriver<
-        'static,
-        VirtualMuxHmac<
-            'static,
-            capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<
-                'static,
-                lowrisc::hmac::Hmac<'static>,
-                32,
-            >,
-            32,
-        >,
-        32,
-    >,
-    sha: &'static capsules_extra::sha::ShaDriver<
-        'static,
-        VirtualMuxSha<
-            'static,
-            capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<
-                'static,
-                lowrisc::hmac::Hmac<'static>,
-                32,
-            >,
-            32,
-        >,
-        32,
-    >,
+    // hmac: &'static capsules_extra::hmac::HmacDriver<
+    //     'static,
+    //     VirtualMuxHmac<
+    //         'static,
+    //         capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<
+    //             'static,
+    //             lowrisc::hmac::Hmac<'static>,
+    //             32,
+    //         >,
+    //         32,
+    //     >,
+    //     32,
+    // >,
+    // sha: &'static capsules_extra::sha::ShaDriver<
+    //     'static,
+    //     VirtualMuxSha<
+    //         'static,
+    //         capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<
+    //             'static,
+    //             lowrisc::hmac::Hmac<'static>,
+    //             32,
+    //         >,
+    //         32,
+    //     >,
+    //     32,
+    // >,
     lldb: &'static capsules_core::low_level_debug::LowLevelDebug<
         'static,
         capsules_core::virtualizers::virtual_uart::UartDevice<'static>,
@@ -158,7 +158,11 @@ pub struct EarlGrey {
             >,
             [u8; 8],
         >,
-    >,
+	>,
+        hmac: &'static capsules_extra::hmac::HmacDriver<
+		'static,
+	    VirtualMuxHmac<'static,
+        crate::cryptolib_hmac::CryptolibHmac<'static, 'static, earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripherals<'static>>>, 32>, 32>,
     syscall_filter: &'static TbfHeaderFilterDefaultAllow,
     scheduler: &'static PrioritySched,
     scheduler_timer:
@@ -173,8 +177,8 @@ impl SyscallDriverLookup for EarlGrey {
     {
         match driver_num {
             capsules_core::led::DRIVER_NUM => f(Some(self.led)),
-            capsules_extra::hmac::DRIVER_NUM => f(Some(self.hmac)),
-            capsules_extra::sha::DRIVER_NUM => f(Some(self.sha)),
+            // capsules_extra::hmac::DRIVER_NUM => f(Some(self.hmac)),
+            // capsules_extra::sha::DRIVER_NUM => f(Some(self.sha)),
             capsules_core::gpio::DRIVER_NUM => f(Some(self.gpio)),
             capsules_core::console::DRIVER_NUM => f(Some(self.console)),
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
@@ -183,6 +187,7 @@ impl SyscallDriverLookup for EarlGrey {
             capsules_core::spi_controller::DRIVER_NUM => f(Some(self.spi_controller)),
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules_extra::symmetric_encryption::aes::DRIVER_NUM => f(Some(self.aes)),
+	    capsules_extra::hmac::DRIVER_NUM => f(Some(self.hmac)),
             capsules_extra::kv_driver::DRIVER_NUM => {
                 f(self.kv_driver.map(|d| d as &dyn SyscallDriver))
             }
@@ -542,44 +547,44 @@ pub unsafe fn setup() -> (
     )
     .finalize(components::low_level_debug_component_static!());
 
-    let mux_digest = components::digest::DigestMuxComponent::new(&peripherals.hmac).finalize(
-        components::digest_mux_component_static!(lowrisc::hmac::Hmac, 32),
-    );
+    // let mux_digest = components::digest::DigestMuxComponent::new(&peripherals.hmac).finalize(
+    //     components::digest_mux_component_static!(lowrisc::hmac::Hmac, 32),
+    // );
 
-    let digest = components::digest::DigestComponent::new(&mux_digest).finalize(
-        components::digest_component_static!(lowrisc::hmac::Hmac, 32,),
-    );
+    // let digest = components::digest::DigestComponent::new(&mux_digest).finalize(
+    //     components::digest_component_static!(lowrisc::hmac::Hmac, 32,),
+    // );
 
-    peripherals.hmac.set_client(digest);
+    // peripherals.hmac.set_client(digest);
 
-    let mux_hmac = components::hmac::HmacMuxComponent::new(digest).finalize(
-        components::hmac_mux_component_static!(capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>, 32),
-    );
+    // let mux_hmac = components::hmac::HmacMuxComponent::new(digest).finalize(
+    //     components::hmac_xmux_component_static!(capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>, 32),
+    // );
 
-    let hmac = components::hmac::HmacComponent::new(
-        board_kernel,
-        capsules_extra::hmac::DRIVER_NUM,
-        &mux_hmac,
-    )
-    .finalize(components::hmac_component_static!(
-        capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>,
-        32,
-    ));
+    // let hmac = components::hmac::HmacComponent::new(
+    //     board_kernel,
+    //     capsules_extra::hmac::DRIVER_NUM,
+    //     &mux_hmac,
+    // )
+    // .finalize(components::hmac_component_static!(
+    //     capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>,
+    //     32,
+    // ));
 
-    digest.set_hmac_client(hmac);
+    // digest.set_hmac_client(hmac);
 
-    let mux_sha = components::sha::ShaMuxComponent::new(digest).finalize(
-        components::sha_mux_component_static!(capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>, 32),
-    );
+    // let mux_sha = components::sha::ShaMuxComponent::new(digest).finalize(
+    //     components::sha_mux_component_static!(capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>, 32),
+    // );
 
-    let sha = components::sha::ShaComponent::new(
-        board_kernel,
-        capsules_extra::sha::DRIVER_NUM,
-        &mux_sha,
-    )
-    .finalize(components::sha_component_static!(capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>, 32));
+    // let sha = components::sha::ShaComponent::new(
+    //     board_kernel,
+    //     capsules_extra::sha::DRIVER_NUM,
+    //     &mux_sha,
+    // )
+    // .finalize(components::sha_component_static!(capsules_core::virtualizers::virtual_digest::VirtualMuxDigest<lowrisc::hmac::Hmac, 32>, 32));
 
-    digest.set_sha_client(sha);
+    // digest.set_sha_client(sha);
 
     let i2c_master = static_init!(
         capsules_core::i2c_master::I2CMasterDriver<'static, lowrisc::i2c::I2c<'static>>,
@@ -720,6 +725,63 @@ pub unsafe fn setup() -> (
     hil::symmetric_encryption::AES128CCM::set_client(ccm_client1, aes);
     hil::symmetric_encryption::AES128::set_client(ccm_client1, aes);
 
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    let cryptosvc_binary = contsvc::ContSvcBinary::find(
+        "cryptolib_cmpsvc",
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ),
+    )
+    .unwrap();
+
+    let cryptosvc = contsvc::ContSvc::new(
+        chip,
+        cryptosvc_binary,
+        &_dsvcram_start as *const u8 as *mut u8,
+        &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+    )
+	.unwrap();
+
+    type CryptolibHmacInst = crate::cryptolib_hmac::CryptolibHmac<'static, 'static, earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripherals<'static>>>;
+
+    let hmac_sha256_cryptolib = static_init!(
+	CryptolibHmacInst,
+	crate::cryptolib_hmac::CryptolibHmac::new(cryptosvc),
+    );
+
+
+    // let hmac = components::hmac::HmacComponent::new(
+    //     board_kernel,
+    //     capsules_extra::hmac::DRIVER_NUM,
+    //     hmac_sha256_cryptolib,
+    // )
+    // .finalize(components::hmac_component_static!(
+    //     CryptolibHmacInst,
+    //     32
+    // ));
+
+
+    let mux_hmac = components::hmac::HmacMuxComponent::new(hmac_sha256_cryptolib).finalize(
+        components::hmac_mux_component_static!(CryptolibHmacInst, 32),
+    );
+
+    let hmac = components::hmac::HmacComponent::new(
+        board_kernel,
+        capsules_extra::hmac::DRIVER_NUM,
+        &mux_hmac,
+    )
+    .finalize(components::hmac_component_static!(
+	CryptolibHmacInst,
+        32,
+    ));
+
+
     let syscall_filter = static_init!(TbfHeaderFilterDefaultAllow, TbfHeaderFilterDefaultAllow {});
     let scheduler = components::sched::priority::PriorityComponent::new(board_kernel)
         .finalize(components::priority_component_static!());
@@ -731,14 +793,15 @@ pub unsafe fn setup() -> (
             led: led,
             console: console,
             alarm: alarm,
-            hmac,
-            sha,
+            // hmac,
+            // sha,
             rng,
             lldb: lldb,
             i2c_master,
             spi_controller,
             aes,
             kv_driver: configure_tickv(peripherals, board_kernel),
+	    hmac,
             syscall_filter,
             scheduler,
             scheduler_timer,
@@ -764,34 +827,6 @@ pub unsafe fn setup() -> (
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
-
-    // These symbols are defined in the linker script.
-    extern "C" {
-        static _dsvcram_start: u8;
-        static _dsvcram_end: u8;
-    }
-
-    // panic!("Pre-parse binary!");
-
-    let dummysvc_binary = contsvc::ContSvcBinary::find(
-        "cryptolib_cmpsvc",
-        core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-        ),
-    )
-    .unwrap();
-
-    // panic!("Parsed binary header!");
-
-    let cryptosvc = contsvc::ContSvc::new(
-        chip,
-        dummysvc_binary,
-        &_dsvcram_start as *const u8 as *mut u8,
-        &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
-    )
-    .unwrap();
-
 
     // let (fnptr, res) =
     //     dummysvc.allocate_stacked_t::<crate::cryptolib_mac::crypto_blinded_key_t, _, _>(|blinded_key| {
@@ -944,21 +979,17 @@ pub unsafe fn setup() -> (
     //  (fnptr, res)
     // }).unwrap()
 
-    let mut tag = [0_u8; 32];
-    let hmac_sha256_cryptolib = static_init!(
-	crate::cryptolib_hmac::CryptolibHmac<'static, 'static, earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripherals<'static>>>,
-	crate::cryptolib_hmac::CryptolibHmac::new(cryptosvc),
-    );
+    // let mut tag = [0_u8; 32];
 
-    hmac_sha256_cryptolib.hmac_update(b"Test message.").unwrap();
-    hmac_sha256_cryptolib.hmac_finalize(&mut tag);
+    // hmac_sha256_cryptolib.hmac_update(b"Test message.").unwrap();
+    // hmac_sha256_cryptolib.hmac_finalize(&mut tag);
     
 
 
-    debug!(
-        "OpenTitan initialisation complete. Entering main loop: {:02x?}",
-        tag
-    );
+    // debug!(
+    //     "OpenTitan initialisation complete. Entering main loop: {:02x?}",
+    //     tag
+    // );
 
     (board_kernel, earlgrey, chip, peripherals)
 }
