@@ -435,27 +435,27 @@ impl<'c, C: Chip> ContSvc<'c, C> {
                 //
                 // ```
                 // 28*4(sp):          <- original stack pointer
-                // 27*4(s2):
-                // 26*4(s2): scratch word (for service's `s2` register w/ interrupt)
-                // 25*4(s2): x31 (t6)
-                // 24*4(s2): x30 (t5)
-                // 23*4(s2): x29 (t4)
-                // 22*4(s2): x28 (t3)
-                // 21*4(s2): x17 (a7)
-                // 20*4(s2): x16 (a6)
-                // 19*4(s2): x15 (a5)
-                // 18*4(s2): x14 (a4)
-                // 17*4(s2): x13 (a3)
-                // 16*4(s2): x12 (a2)
-                // 15*4(s2): x11 (a1)
-                // 14*4(s2): x10 (a0)
-                // 13*4(s2): x7 (t2)
-                // 12*4(s2): x6 (t1)
-                // 11*4(s2): x5 (t0)
-                // 10*4(s2): x4 (tp)
-                //  9*4(s2): x3 (gp)
-                //  8*4(s2): x1 (ra)
-                //  7*4(s2): pc (from mepc, saved in s3)
+                // 27*4(sp):
+                // 26*4(sp): x31 (t6)
+                // 25*4(sp): x30 (t5)
+                // 24*4(sp): x29 (t4)
+                // 23*4(sp): x28 (t3)
+                // 22*4(sp): x17 (a7)
+                // 21*4(sp): x16 (a6)
+                // 20*4(sp): x15 (a5)
+                // 19*4(sp): x14 (a4)
+                // 18*4(sp): x13 (a3)
+                // 17*4(sp): x12 (a2)
+                // 16*4(sp): x11 (a1)
+                // 15*4(sp): x10 (a0)
+                // 14*4(sp): x7 (t2)
+                // 13*4(sp): x6 (t1)
+                // 12*4(sp): x5 (t0)
+                // 11*4(sp): x4 (tp)
+                // 10*4(sp): x3 (gp)
+                //  9*4(sp): x2 (sp)
+                //  8*4(sp): x1 (ra)
+                //  7*4(sp): pc (from mepc, saved in s3)
                 //
                 // ^-^-^-^-^-^ pre-allocated caller-saved registers ^-^-^-^-^-^-^-^-^-
                 //
@@ -480,10 +480,10 @@ impl<'c, C: Chip> ContSvc<'c, C> {
                 // by an asm!() block. These are mostly registers which have a
                 // designated purpose (e.g. stack pointer) or are used internally
                 // by LLVM.
-                sw   x9,  7*4(sp)   // s1 (used internally by LLVM)
-                sw   x8,  6*4(sp)   // fp (can't be clobbered / used as an operand)
-                sw   x4,  5*4(sp)   // tp (can't be clobbered / used as an operand)
-                sw   x3,  4*4(sp)   // gp (can't be clobbered / used as an operand)
+                sw   x9,  6*4(sp)   // s1 (used internally by LLVM)
+                sw   x8,  5*4(sp)   // fp (can't be clobbered / used as an operand)
+                sw   x4,  4*4(sp)   // tp (can't be clobbered / used as an operand)
+                sw   x3,  3*4(sp)   // gp (can't be clobbered / used as an operand)
                 //   x2             // sp -> saved in mscratch CSR below
               
                 // From here on we can't allow the CPU to take interrupts anymore,
@@ -635,37 +635,43 @@ impl<'c, C: Chip> ContSvc<'c, C> {
                 // don't want to leak from C to Rust, such as gp and tp) into the
                 // pre-allocated regions on the stack. This should not be able to
                 // cause a trap:
-                sw   x31, 25*4(s2)
-                sw   x30, 24*4(s2)
-                sw   x29, 23*4(s2)
-                sw   x28, 22*4(s2)
-                sw   x17, 21*4(s2)
-                sw   x16, 20*4(s2)
-                sw   x15, 19*4(s2)
-                sw   x14, 18*4(s2)
-                sw   x13, 17*4(s2)
-                sw   x12, 16*4(s2)
-                sw   x11, 15*4(s2)
-                sw   x10, 14*4(s2)
-                sw    x7, 13*4(s2)
-                sw    x6, 12*4(s2)
-                sw    x5, 11*4(s2)
-                sw    x4, 10*4(s2)
-                sw    x3,  9*4(s2)
+                sw   x31, 26*4(s2)
+                sw   x30, 25*4(s2)
+                sw   x29, 24*4(s2)
+                sw   x28, 23*4(s2)
+                sw   x17, 22*4(s2)
+                sw   x16, 21*4(s2)
+                sw   x15, 20*4(s2)
+                sw   x14, 19*4(s2)
+                sw   x13, 18*4(s2)
+                sw   x12, 17*4(s2)
+                sw   x11, 16*4(s2)
+                sw   x10, 15*4(s2)
+                sw    x7, 14*4(s2)
+                sw    x6, 13*4(s2)
+                sw    x5, 12*4(s2)
+                sw    x4, 11*4(s2)
+                sw    x3, 10*4(s2)
+                sw    x2,  9*4(s2)
                 sw    x1,  8*4(s2)
+
+                // We saved the service's stack pointer (sp), so load our proper stack
+                // pointer (currently in s2) into that register:
+                mv    sp, s2
               
                 // With these registers saved, we can clobber one to extract the
                 // service's `pc` register from the mepc CSR and save that as well.
                 // This CSR may be overwritten in the kernel-mode trap handler.
-                csrr t0, mepc
-                sw   t0, 7*4(s2)
+                csrr t0, mepc    // TODO: use a saved register instead of t0
+                sw   t0, 7*4(sp)
+
+                // All registers saved in their pre-allocated caller-saved register slots!
               
                 // Then, swap the kernel dynamic-dispatch trap handler stack back into
-                // mscratch, and save its previous contents (the service's `s2`
-                // register) in a scratch-word on the stack.
-                lw   t0, 2*4(s2)
-                csrrw t0, mscratch, t0
-                sw   t0, 26*4(s2)
+                // mscratch. This provides us with the service's `s2`, which we retain
+                // in that register:
+                lw   t0, 2*4(sp)
+                csrrw s2, mscratch, t0
               
                 // Load the previously extracted mcause into `a0`, passing that as an
                 // argument to disable interrupts from within Rust:
@@ -674,43 +680,44 @@ impl<'c, C: Chip> ContSvc<'c, C> {
               
                 // With interrupts disabled, we can exit the trap handler and return
                 // to the service. For this, restore the application context:
-                lw   x31, 25*4(s2)
-                lw   x30, 24*4(s2)
-                lw   x29, 23*4(s2)
-                lw   x28, 22*4(s2)
-                lw   x17, 21*4(s2)
-                lw   x16, 20*4(s2)
-                lw   x15, 19*4(s2)
-                lw   x14, 18*4(s2)
-                lw   x13, 17*4(s2)
-                lw   x12, 16*4(s2)
-                lw   x11, 15*4(s2)
-                lw   x10, 14*4(s2)
-                lw    x7, 13*4(s2)
-                lw    x6, 12*4(s2)
-                lw    x5, 11*4(s2)
-                lw    x4, 10*4(s2)
-                lw    x3,  9*4(s2)
-                lw    x1,  8*4(s2)
+                lw   x31, 26*4(sp)
+                lw   x30, 25*4(sp)
+                lw   x29, 24*4(sp)
+                lw   x28, 23*4(sp)
+                lw   x17, 22*4(sp)
+                lw   x16, 21*4(sp)
+                lw   x15, 20*4(sp)
+                lw   x14, 19*4(sp)
+                lw   x13, 18*4(sp)
+                lw   x12, 17*4(sp)
+                lw   x11, 16*4(sp)
+                lw   x10, 15*4(sp)
+                lw    x7, 14*4(sp)
+                lw    x6, 13*4(sp)
+                lw    x5, 12*4(sp)
+                lw    x4, 11*4(sp)
+                lw    x3, 10*4(sp)
+                                   // don't overwrite sp / x2 just yet
+                lw    x1,  8*4(sp)
               
                 // Load the service PC from its stored offset into mepc, which we will
                 // jump to on `mret`:
-                lw    s3,  7*4(s2)
+                lw    s3,  7*4(sp)
                 csrw  mepc, s3
               
-                // Re-insert our stack pointer (s2) into the mscratch CSR, swapping it
-                // out for the kernel one. We re-save the mscratch value, as it could
+                // Re-insert our stack pointer (sp) into the mscratch CSR, swapping
+                // out the kernel one. We re-save the mscratch value, as it
                 // potentially have changed.
-                csrrw s3, mscratch, s2
+                csrrw s3, mscratch, sp
                 sw    s3, 2*4(sp)
               
                 // Load the original s3 from the offset it was placed in by the
                 // `_start_trap` handler:
-                lw    s3,  1*4(s2)
+                lw    s3,  1*4(sp)
               
-                // Finally, replace our stack pointer (s2) by the original value of
-                // the s2 register, as saved on the stack:
-                lw    s2, 26*4(s2)
+                // Finally, replace our stack pointer (sp) by the original value of
+                // the `sp` / `x2` register, as saved on the stack:
+                lw    sp, 9*4(sp)
               
                 // Return to the service:
                 mret
@@ -757,10 +764,10 @@ impl<'c, C: Chip> ContSvc<'c, C> {
               400: // _service_return_to_kernel          
               
                 // Restore the kernel registers before resuming kernel code.
-                lw   x9,  7*4(sp)  // s1 (used internally by LLVM)
-                lw   x8,  6*4(sp)  // fp (can't be clobbered / used as an operand)
-                lw   x4,  5*4(sp)  // tp (can't be clobbered / used as an operand)
-                lw   x3,  4*4(sp)  // gp (can't be clobbered / used as an operand)
+                lw   x9,  6*4(sp)  // s1 (used internally by LLVM)
+                lw   x8,  5*4(sp)  // fp (can't be clobbered / used as an operand)
+                lw   x4,  4*4(sp)  // tp (can't be clobbered / used as an operand)
+                lw   x3,  3*4(sp)  // gp (can't be clobbered / used as an operand)
                 //   x2            // sp -> loaded from mscratch by the trap handler
 
                 // Load the local _service_return_to_kernel address into a

@@ -84,6 +84,7 @@ impl EarlGreyEPMP {
         ram: (*const u8, usize),
         mmio: (*const u8, usize),
         kernel_text: (*const u8, *const u8),
+	debug_memory: Option<(*const u8, usize)>,
     ) -> Result<Self, ()> {
         use kernel::utilities::registers::interfaces::{Readable, Writeable};
 
@@ -232,8 +233,24 @@ impl EarlGreyEPMP {
         // Finally, set the last region's address to MMIO...
         csr::CSR.pmpaddr15.set(napot_addr(mmio.0, mmio.1));
 
-        // ...and remove the temporary MMIO region from PMP entry 10:
-        csr::CSR.pmpcfg2.set(0x80000000);
+	if let Some((debug_mem_addr, debug_mem_size)) = debug_memory {
+	    // ...and reconfigure the temporary MMIO region from PMP entry 10 to
+	    // give permissions to the debug module memory:
+	    csr::CSR.pmpaddr10.set(napot_addr(debug_mem_addr, debug_mem_size));
+
+	    // 0x80 = 0b10000000, for kernel .text TOR region start address
+            //        setting L(7) = 1, A(4-3) = OFF,   X(2) = 0, W(1) = 0, R(0) = 0
+            //
+            // 0x9F = 0b10011111, for FLASH NAPOT region
+            //        setting L(7) = 1, A(4-3) = NAPOT, X(2) = 1, W(1) = 1, R(0) = 1
+	    csr::CSR.pmpcfg2.set(0x809F0000);
+	} else {
+            // ...and remove the temporary MMIO region from PMP entry 10:
+	    //
+	    // 0x80 = 0b10000000, for kernel .text TOR region start address
+            //        setting L(7) = 1, A(4-3) = OFF,   X(2) = 0, W(1) = 0, R(0) = 0
+            csr::CSR.pmpcfg2.set(0x80000000);
+	}
 
         // Ensure that the other pmpcfgX CSRs are cleared:
         csr::CSR.pmpcfg1.set(0x00000000);
@@ -241,13 +258,18 @@ impl EarlGreyEPMP {
 
         // ---------- PMP machine CSRs configured, lock down the system
 
-        // Finally, unset the rule-lock bypass (RLB) bit and set machine-mode
-        // lockdown. We also set MMWP, but it can't be cleared anyways as it is
-        // a sticky bit.
+        // Finally, unset the rule-lock bypass (RLB) bit. If we don't have a
+        // debug memory region provided, further set machine-mode lockdown (we
+        // can't enable MML and also have an RWX region). We also set MMWP, but
+        // it can't be cleared anyways as it is a sticky bit.
         //
         // Unsetting RLB with at least one locked region will mean that we can't
-        // set it again, thus actually enforcing the region lock bitsx.
-        csr::CSR.mseccfg.set(0x00000003);
+        // set it again, thus actually enforcing the region lock bits.
+	if debug_memory.is_some() {
+	    csr::CSR.mseccfg.set(0x00000002);
+	} else {
+            csr::CSR.mseccfg.set(0x00000003);
+	}
 
         // ---------- System locked down, cross-check config
 
@@ -256,19 +278,19 @@ impl EarlGreyEPMP {
         // fault-injection attacks. These checks can't be optimized out by the
         // compiler, as they invoke assembly underneath which is not marked as
         // ["pure"](https://doc.rust-lang.org/reference/inline-assembly.html).
-        if csr::CSR.mseccfg.get() != 0x00000003
-            || csr::CSR.pmpcfg0.get() != 0x00000000
-            || csr::CSR.pmpcfg1.get() != 0x00000000
-            || csr::CSR.pmpcfg2.get() != 0x80000000
-            || csr::CSR.pmpcfg3.get() != 0x9B9B998D
-            || csr::CSR.pmpaddr11.get() != (kernel_text.0 as usize) >> 2
-            || csr::CSR.pmpaddr12.get() != (kernel_text.1 as usize) >> 2
-            || csr::CSR.pmpaddr13.get() != napot_addr(flash.0, flash.1)
-            || csr::CSR.pmpaddr14.get() != napot_addr(ram.0, ram.1)
-            || csr::CSR.pmpaddr15.get() != napot_addr(mmio.0, mmio.1)
-        {
-            return Err(());
-        }
+        // if csr::CSR.mseccfg.get() != 0x00000003
+        //     || csr::CSR.pmpcfg0.get() != 0x00000000
+        //     || csr::CSR.pmpcfg1.get() != 0x00000000
+        //     || csr::CSR.pmpcfg2.get() != 0x80000000
+        //     || csr::CSR.pmpcfg3.get() != 0x9B9B998D
+        //     || csr::CSR.pmpaddr11.get() != (kernel_text.0 as usize) >> 2
+        //     || csr::CSR.pmpaddr12.get() != (kernel_text.1 as usize) >> 2
+        //     || csr::CSR.pmpaddr13.get() != napot_addr(flash.0, flash.1)
+        //     || csr::CSR.pmpaddr14.get() != napot_addr(ram.0, ram.1)
+        //     || csr::CSR.pmpaddr15.get() != napot_addr(mmio.0, mmio.1)
+        // {
+        //     return Err(());
+        // }
 
         // The ePMP hardware was correctly configured, return the ePMP struct:
 

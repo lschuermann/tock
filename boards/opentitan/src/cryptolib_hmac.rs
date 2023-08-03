@@ -271,6 +271,8 @@ impl<'client, 'chip, C: Chip> kernel::hil::digest::DigestData<'client, 32> for C
         &self,
         data: LeasableBuffer<'static, u8>,
     ) -> Result<(), (ErrorCode, LeasableBuffer<'static, u8>)> {
+	// panic!("add_data");
+	kernel::debug!("add_data");
         match self.hmac_update(data.active_slice()) {
             Ok(_) => {
                 // Schedule deferred call and save data
@@ -288,6 +290,8 @@ impl<'client, 'chip, C: Chip> kernel::hil::digest::DigestData<'client, 32> for C
 	&self,
 	data: LeasableMutableBuffer<'static, u8>,
     ) -> Result<(), (ErrorCode, LeasableMutableBuffer<'static, u8>)> {
+	// panic!("add_mut_data");
+	kernel::debug!("add_mut_data");
         match self.hmac_update(data.active_slice()) {
             Ok(_) => {
                 // Schedule deferred call and save data
@@ -311,6 +315,8 @@ impl<'client, 'chip, C: Chip> kernel::hil::digest::DigestHash<'client, 32> for C
 	&self,
 	digest: &'static mut [u8; 32],
     ) -> Result<(), (ErrorCode, &'static mut [u8; 32])> {
+	// panic!("run");
+	kernel::debug!("run");
 	self.hmac_finalize(digest);
 
 	// Schedule deferred call and save data
@@ -375,6 +381,7 @@ impl<'client, 'chip, C: Chip> DeferredCallClient for CryptolibHmac<'client, 'chi
     fn handle_deferred_call(&self) {
 	match self.deferred_call_op.get() {
 	    DeferredCallOp::AddData => {
+		kernel::debug!("defcall add_data");
 		let data_buf = self.input_data.take().unwrap();
 		match data_buf {
 		    LeasableBufferDynamic::Immutable(buf) => {
@@ -386,6 +393,7 @@ impl<'client, 'chip, C: Chip> DeferredCallClient for CryptolibHmac<'client, 'chi
 		}
 	    },
 	    DeferredCallOp::Run => {
+		kernel::debug!("defcall run");
 		let digest_buf = self.digest_buffer.take().unwrap();
 		self.client.map(move |c| c.hash_done(Ok(()), digest_buf));
 	    }

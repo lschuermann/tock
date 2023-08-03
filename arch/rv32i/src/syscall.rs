@@ -236,6 +236,8 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
     ) -> (ContextSwitchReason, Option<*const u8>) {
         let mut app_mtval: u32;
         let mut app_mcause: u32;
+	let mut stack_invalid: u32;
+	let mut stack: u32;
 
         use core::arch::asm;
         // We need to ensure that the compiler does not reorder
@@ -388,7 +390,6 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // executing. We will still be in the trap handler context, and have
           // to switch back to kernel mode using `mret` accordingly.
         100: // _app_trap_continue
-
           // At this point all we know is that we entered the trap handler
           // from an app. We don't know _why_ we got a trap, it could be from
           // an interrupt, syscall, or fault (or maybe something else).
@@ -524,6 +525,10 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // it. This saves Rust from stacking a register.
 
           addi sp, sp, 8*4   // Reset kernel stack pointer
+
+          // li x5, 0x10004000
+          // mv x7, sp
+          // slt x6, x5, x7
           ",
 
           // Stored process state. Loaded into a callee-saved register to avoid
@@ -539,12 +544,16 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
 
           // Clobber all registers which can be marked as clobbered, except
           // those marked as inputs or outputs above:
-          out("x1") _, out("x5") _, out("x6") _, out("x7") _, out("x10") _,
+          out("x1") _, out("x5") _, out("x6") stack_invalid, out("x7") stack, out("x10") _,
           out("x11") _, out("x12") _, out("x13") _, out("x14") _, out("x15") _,
           out("x16") _, out("x17") _, out("x21") _, out("x22") _, out("x23") _,
           out("x24") _, out("x25") _, out("x26") _, out("x27") _, out("x28") _,
           out("x29") _, out("x30") _, out("x31") _,
         );
+
+	// if stack_invalid != 0 {
+	//     panic!("Stack invalid: {:x}!", stack);
+	// }
 
         state.mtval = app_mtval;
         state.mcause = app_mcause;

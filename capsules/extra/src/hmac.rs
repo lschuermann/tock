@@ -644,6 +644,8 @@ impl<
 
                     // run
                     1 => {
+			panic!("HMAC run!");
+
                         // There is an active app, so queue this request (if possible).
                         if app.pending_run_app.is_some() {
                             // No more room in the queue, nowhere to store this

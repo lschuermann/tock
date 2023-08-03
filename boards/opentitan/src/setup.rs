@@ -85,7 +85,7 @@ pub(crate) const FAULT_RESPONSE: kernel::process::PanicFaultPolicy =
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
-pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
+pub static mut STACK_MEMORY: [u8; 0x4000] = [0; 0x4000];
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform. We've included an alarm and console.
@@ -100,7 +100,14 @@ pub struct EarlGrey {
     alarm: &'static capsules_core::alarm::AlarmDriver<
         'static,
         VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>,
+	>,
+    pconsole: &'static capsules_core::process_console::ProcessConsole<
+        'static,
+        { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
+        VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>,
+        components::process_console::Capability,
     >,
+
     // hmac: &'static capsules_extra::hmac::HmacDriver<
     //     'static,
     //     VirtualMuxHmac<
@@ -409,6 +416,9 @@ pub unsafe fn setup() -> (
             (0x40000000 as *const u8, 0x10000000),
             // kernel .text
             (&_stext as *const u8, &_etext as *const u8),
+	    // rv_dm mem device for debugger access
+	    // None,
+	    Some((0x00010000 as *const u8, 0x00001000)),
         )
         .unwrap()
     };
@@ -437,7 +447,8 @@ pub unsafe fn setup() -> (
         &peripherals.uart0,
         earlgrey::uart::UART0_BAUDRATE,
     )
-    .finalize(components::uart_mux_component_static!());
+	.finalize(components::uart_mux_component_static!());
+
 
     // LEDs
     // Start with half on and half off
@@ -619,6 +630,18 @@ pub unsafe fn setup() -> (
         .finalize(components::process_printer_text_component_static!());
     PROCESS_PRINTER = Some(process_printer);
 
+    let pconsole = components::process_console::ProcessConsoleComponent::new(
+        board_kernel,
+        uart_mux,
+        mux_alarm,
+        process_printer,
+        None,
+    )
+    .finalize(components::process_console_component_static!(
+        earlgrey::timer::RvTimer
+    ));
+
+
     // USB support is currently broken in the OpenTitan hardware
     // See https://github.com/lowRISC/opentitan/issues/2598 for more details
     // let usb = usb::UsbComponent::new(board_kernel).finalize(());
@@ -639,33 +662,33 @@ pub unsafe fn setup() -> (
     let otbn_rsa_internal_buf = static_init!([u8; 512], [0; 512]);
 
     // Use the OTBN to create an RSA engine
-    if let Ok((rsa_imem_start, rsa_imem_length, rsa_dmem_start, rsa_dmem_length)) =
-        crate::otbn::find_app(
-            "otbn-rsa",
-            core::slice::from_raw_parts(
-                &_sapps as *const u8,
-                &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-            ),
-        )
-    {
-        let rsa_hardware = static_init!(
-            lowrisc::rsa::OtbnRsa<'static>,
-            lowrisc::rsa::OtbnRsa::new(
-                otbn,
-                lowrisc::rsa::AppAddresses {
-                    imem_start: rsa_imem_start,
-                    imem_size: rsa_imem_length,
-                    dmem_start: rsa_dmem_start,
-                    dmem_size: rsa_dmem_length
-                },
-                otbn_rsa_internal_buf,
-            )
-        );
-        peripherals.otbn.set_client(rsa_hardware);
-        RSA_HARDWARE = Some(rsa_hardware);
-    } else {
-        debug!("Unable to find otbn-rsa, disabling RSA support");
-    }
+    // if let Ok((rsa_imem_start, rsa_imem_length, rsa_dmem_start, rsa_dmem_length)) =
+    //     crate::otbn::find_app(
+    //         "otbn-rsa",
+    //         core::slice::from_raw_parts(
+    //             &_sapps as *const u8,
+    //             &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+    //         ),
+    //     )
+    // {
+    //     let rsa_hardware = static_init!(
+    //         lowrisc::rsa::OtbnRsa<'static>,
+    //         lowrisc::rsa::OtbnRsa::new(
+    //             otbn,
+    //             lowrisc::rsa::AppAddresses {
+    //                 imem_start: rsa_imem_start,
+    //                 imem_size: rsa_imem_length,
+    //                 dmem_start: rsa_dmem_start,
+    //                 dmem_size: rsa_dmem_length
+    //             },
+    //             otbn_rsa_internal_buf,
+    //         )
+    //     );
+    //     peripherals.otbn.set_client(rsa_hardware);
+    //     RSA_HARDWARE = Some(rsa_hardware);
+    // } else {
+    //     debug!("Unable to find otbn-rsa, disabling RSA support");
+    // }
 
     // Convert hardware RNG to the Random interface.
     let entropy_to_random = static_init!(
@@ -754,6 +777,8 @@ pub unsafe fn setup() -> (
 	CryptolibHmacInst,
 	crate::cryptolib_hmac::CryptolibHmac::new(cryptosvc),
     );
+    kernel::deferred_call::DeferredCallClient::register(hmac_sha256_cryptolib);
+    
 
 
     // let hmac = components::hmac::HmacComponent::new(
@@ -805,6 +830,7 @@ pub unsafe fn setup() -> (
             syscall_filter,
             scheduler,
             scheduler_timer,
+	    pconsole,
         }
     );
 
@@ -837,12 +863,12 @@ pub unsafe fn setup() -> (
     //  //     bk.keyblob_length = 64;
     //  // }
 
-    //  let fnptr = dummysvc.resolve_function_pointer(7).unwrap();
-    //  let res = dummysvc.invoke_service(fnptr, tagblob as usize, 0, 0, 0, 0, 0, 0, 0, false);
-    //  tag.copy_from_slice(unsafe { core::slice::from_raw_parts(tagblob, 32) });
-    //  (fnptr, res)
-    //         }).unwrap()
-    //     }).unwrap();
+     // let fnptr = dummysvc.resolve_function_pointer(7).unwrap();
+     // let res = dummysvc.invoke_service(fnptr, tagblob as usize, 0, 0, 0, 0, 0, 0, 0, false);
+     // tag.copy_from_slice(unsafe { core::slice::from_raw_parts(tagblob, 32) });
+     // (fnptr, res)
+     //        }).unwrap()
+     //    }).unwrap();
 
     // debug!("OpenTitan initialisation complete. Entering main loop: {:p} {:?} {:02x?}", fnptr, res, tag);
 
@@ -979,17 +1005,18 @@ pub unsafe fn setup() -> (
     //  (fnptr, res)
     // }).unwrap()
 
-    // let mut tag = [0_u8; 32];
+    let mut tag = [0_u8; 32];
 
-    // hmac_sha256_cryptolib.hmac_update(b"Test message.").unwrap();
-    // hmac_sha256_cryptolib.hmac_finalize(&mut tag);
+    hmac_sha256_cryptolib.hmac_init(&[0; 32]).unwrap();
+    hmac_sha256_cryptolib.hmac_update(b"Test message.").unwrap();
+    hmac_sha256_cryptolib.hmac_finalize(&mut tag);
     
 
-
-    // debug!(
-    //     "OpenTitan initialisation complete. Entering main loop: {:02x?}",
-    //     tag
-    // );
+    let _ = earlgrey.pconsole.start();
+    debug!(
+        "OpenTitan initialisation complete. Entering main loop: {:02x?}",
+        tag
+    );
 
     (board_kernel, earlgrey, chip, peripherals)
 }

@@ -18,9 +18,11 @@ use crate::interrupts;
 use crate::plic::Plic;
 use crate::plic::PLIC;
 
+static mut MPU: Option<PMPUserMPU<5, EarlGreyEPMP>> = None;
+
 pub struct EarlGrey<'a, I: InterruptService + 'a> {
     userspace_kernel_boundary: SysCall,
-    pub mpu: PMPUserMPU<5, EarlGreyEPMP>,
+    // pub mpu: PMPUserMPU<5, EarlGreyEPMP>,
     plic: &'a Plic,
     timer: &'static crate::timer::RvTimer<'static>,
     pwrmgr: lowrisc::pwrmgr::PwrMgr,
@@ -127,9 +129,11 @@ impl<'a, I: InterruptService + 'a> EarlGrey<'a, I> {
         timer: &'static crate::timer::RvTimer,
         epmp: EarlGreyEPMP,
     ) -> Self {
+	unsafe { MPU = Some(PMPUserMPU::new(epmp)); }
+
         Self {
             userspace_kernel_boundary: SysCall::new(),
-            mpu: PMPUserMPU::new(epmp),
+            // mpu: PMPUserMPU::new(epmp),
             plic: &PLIC,
             pwrmgr: lowrisc::pwrmgr::PwrMgr::new(crate::pwrmgr::PWRMGR_BASE),
             timer,
@@ -232,7 +236,8 @@ impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for EarlGrey<'a,
     type UserspaceKernelBoundary = SysCall;
 
     fn mpu(&self) -> &Self::MPU {
-        &self.mpu
+        // &self.mpu
+	unsafe { MPU.as_ref().unwrap() }
     }
 
     fn userspace_kernel_boundary(&self) -> &SysCall {
@@ -283,7 +288,7 @@ impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for EarlGrey<'a,
             CONFIG.name
         ));
         rv32i::print_riscv_state(writer);
-        let _ = writer.write_fmt(format_args!("{}", self.mpu.pmp));
+        let _ = writer.write_fmt(format_args!("{}", self.mpu().pmp));
     }
 }
 
@@ -383,6 +388,9 @@ pub unsafe extern "C" fn start_trap_rust() {
 /// interrupt that fired so that it does not trigger again.
 #[export_name = "_disable_interrupt_trap_rust_from_app"]
 pub unsafe extern "C" fn disable_interrupt_trap_handler(mcause_val: u32) {
+    // use kernel::platform::mpu::MPU;
+    // let mpu = unsafe { MPU.as_ref().unwrap() };
+    // mpu.disable_app_mpu();
     match mcause::Trap::from(mcause_val as usize) {
         mcause::Trap::Interrupt(interrupt) => {
             handle_interrupt(interrupt);
@@ -391,6 +399,7 @@ pub unsafe extern "C" fn disable_interrupt_trap_handler(mcause_val: u32) {
             panic!("unexpected non-interrupt\n");
         }
     }
+    // mpu.enable_app_mpu();
 }
 
 pub unsafe fn configure_trap_handler() {

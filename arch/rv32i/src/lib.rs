@@ -264,6 +264,18 @@ pub unsafe extern "C" fn _start_trap() {
             // from `1*4(s2)`, and then restore `s2` from `mscratch`.
             csrrw s2, mscratch, s2
             sw    s3, 1*4(s2)
+
+            // Dummy branch for GDB
+            csrr s3, mcause
+            blt s3, zero, 101f
+            csrr s3, mstatus
+            srli s3, s3, 12
+            andi s3, s3, 0b1
+            beq s3, x0, 101f
+            addi x0, x0, 0
+
+          101:
+
             lw    s3, 0*4(s2)
             jr    s3
         ",
@@ -361,7 +373,7 @@ pub unsafe extern "C" fn kernel_trap_continue() {
             // running any trap handler code.
             //
             // TODO: handle reentrant traps?
-            addi sp, sp, -16*4
+            addi sp, sp, -20*4
 
             // Save all of the caller saved registers. The clobbered `s3` is
             // callee-saved and thus don't need to concern us here.
@@ -382,10 +394,20 @@ pub unsafe extern "C" fn kernel_trap_continue() {
             sw   a6, 14*4(sp)
             sw   a7, 15*4(sp)
 
+            csrrw t0, pmpcfg0, x0
+            sw   t0, 16*4(sp)
+            csrrw t0, pmpcfg1, x0
+            sw   t0, 17*4(sp)
+
             // Jump to board-specific trap handler code. Likely this was an
             // interrupt and we want to disable a particular interrupt, but each
             // board/chip can customize this as needed.
             jal ra, _start_trap_rust_from_kernel
+
+            lw   t0, 16*4(sp)
+            csrw pmpcfg0, t0
+            lw   t0, 17*4(sp)
+            csrw pmpcfg1, t0
 
             // Restore the registers from the stack.
             lw   ra, 0*4(sp)
@@ -406,7 +428,7 @@ pub unsafe extern "C" fn kernel_trap_continue() {
             lw   a7, 15*4(sp)
 
             // Reset the stack pointer.
-            addi sp, sp, 16*4
+            addi sp, sp, 20*4
 
             // Restore the original `s3` register:
             lw   s3, 1*4(s3)
