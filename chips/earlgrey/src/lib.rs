@@ -19,6 +19,7 @@ pub mod aes;
 pub mod aon_timer;
 pub mod chip;
 pub mod csrng;
+pub mod epmp;
 pub mod flash_ctrl;
 pub mod gpio;
 pub mod hmac;
