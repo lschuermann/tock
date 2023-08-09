@@ -4,7 +4,9 @@
 //
 // Author: Ioan-Cristian CÎRSTEA <ioan.cirstea@oxidos.io>
 
-#![warn(missing_docs)]
+#![deny(dead_code)]
+#![deny(missing_docs)]
+#![deny(unused_imports)]
 //! HSI (high-speed internal) clock driver for the STM32F4xx family. [^doc_ref]
 //!
 //! # Usage
@@ -50,7 +52,8 @@ use crate::rcc::Rcc;
 use kernel::debug;
 use kernel::ErrorCode;
 
-pub(crate) const HSI_FREQUENCY_MHZ: usize = 16;
+/// HSI frequency in MHz
+pub const HSI_FREQUENCY_MHZ: usize = 16;
 
 /// Main HSI clock structure
 pub struct Hsi<'a> {

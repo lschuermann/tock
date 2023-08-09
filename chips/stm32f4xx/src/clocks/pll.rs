@@ -4,7 +4,9 @@
 //
 // Author: Ioan-Cristian CÎRSTEA <ioan.cirstea@oxidos.io>
 
+#![deny(dead_code)]
 #![deny(missing_docs)]
+#![deny(unused_imports)]
 //! Main phase-locked loop (PLL) clock driver for the STM32F4xx family. [^doc_ref]
 //!
 //! Many boards of the STM32F4xx family provide several PLL clocks. However, all of them have a
@@ -84,7 +86,7 @@
 //! ```rust,ignore
 //! // The frequency of the PLL clock must be 1, 1.5, 2, 2.5, 3, 3.5 or 4 x 48MHz in order to get
 //! // 48MHz output. Otherwise, the driver will attempt to get the closest frequency lower than 48MHz
-//! pll.set_frequency(72); // 72MHz = 48Mhz * 1.5
+//! pll.set_frequency(72); // 72MHz = 48MHz * 1.5
 //! pll.enable();
 //! ```
 //!
@@ -107,6 +109,8 @@
 //!
 //! [^doc_ref]: See 6.2.3 in the documentation.
 
+use crate::chip_specific::clock_constants::pll_constants::PLL_MIN_FREQ_MHZ;
+use crate::clocks::hsi::HSI_FREQUENCY_MHZ;
 use crate::rcc::Rcc;
 use crate::rcc::SysClockSource;
 use crate::rcc::{DEFAULT_PLLM_VALUE, DEFAULT_PLLN_VALUE, DEFAULT_PLLP_VALUE, DEFAULT_PLLQ_VALUE};
@@ -126,14 +130,14 @@ pub struct Pll<'a> {
     pll48_calibrated: Cell<bool>,
 }
 
-const HSI_FREQUENCY_MHZ: usize = 16;
+/// PLL max frequency in MHz
+pub const PLL_MAX_FREQ_MHZ: usize = 216;
 
-#[cfg(not(feature = "stm32f401"))]
-const PLL_MIN_FREQ_MHZ: usize = 13;
-#[cfg(feature = "stm32f401")]
-const PLL_MIN_FREQ_MHZ: usize = 24;
-
-const PLL_MAX_FREQ_MHZ: usize = 216;
+/// PLL frequency limit values (minimum and maximum)
+pub mod limits {
+    pub use super::PLL_MAX_FREQ_MHZ;
+    pub use crate::chip_specific::clock_constants::pll_constants::PLL_MIN_FREQ_MHZ;
+}
 
 impl<'a> Pll<'a> {
     // Create a new instance of the PLL clock.
@@ -185,7 +189,7 @@ impl<'a> Pll<'a> {
     // return value makes no sense.
     fn compute_plln(desired_frequency_mhz: usize, pllp: PLLP) -> usize {
         const VCO_INPUT_FREQUENCY: usize = HSI_FREQUENCY_MHZ / DEFAULT_PLLM_VALUE as usize;
-        desired_frequency_mhz * (pllp as usize + 1) * 2 / VCO_INPUT_FREQUENCY
+        desired_frequency_mhz * Into::<usize>::into(pllp) / VCO_INPUT_FREQUENCY
     }
 
     // The caller must ensure the VCO output frequency lies between 100 and 432MHz. Otherwise, the
@@ -276,7 +280,7 @@ impl<'a> Pll<'a> {
     /// (≤ 48MHz) and the SDIO (≤ 48MHz) clocks.
     ///
     /// When calling this method, the given frequency is set for the main output. The method will
-    /// attempt to configure the PLL48CLK output to 48MHz, or to the hightest value less than 48MHz
+    /// attempt to configure the PLL48CLK output to 48MHz, or to the highest value less than 48MHz
     /// if it is not possible to get a precise 48MHz. In order to obtain a precise 48MHz frequency
     /// (for the OTG USB FS peripheral), one should call this method with a frequency of 1, 1.5, 2,
     /// 2.5 ... 4 x 48MHz.
@@ -342,7 +346,7 @@ impl<'a> Pll<'a> {
     /// + [None]: if the PLL clock is disabled.
     pub fn get_frequency(&self) -> Option<usize> {
         if self.is_enabled() {
-            self.frequency.extract()
+            self.frequency.get()
         } else {
             None
         }
@@ -359,7 +363,7 @@ impl<'a> Pll<'a> {
     /// + [None]: if the PLL clock is disabled.
     pub fn get_frequency_pll48(&self) -> Option<usize> {
         if self.is_enabled() {
-            self.pll48_frequency.extract()
+            self.pll48_frequency.get()
         } else {
             None
         }

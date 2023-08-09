@@ -9,9 +9,9 @@
 #![crate_name = "stm32f4xx"]
 #![crate_type = "rlib"]
 #![no_std]
-#![feature(core_panic)]
 
 pub mod chip;
+pub mod chip_specific;
 pub mod nvic;
 
 // Peripherals

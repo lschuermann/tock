@@ -803,7 +803,7 @@ impl Rcc {
     }
 
     /* HSI clock */
-    // The HSI clock must not be configured as the sistem clock, either directly or indirectly.
+    // The HSI clock must not be configured as the system clock, either directly or indirectly.
     pub(crate) fn disable_hsi_clock(&self) {
         self.registers.cr.modify(CR::HSION::CLEAR);
     }
@@ -823,7 +823,7 @@ impl Rcc {
 
     /* Main PLL clock*/
 
-    // The main PLL clock must not be configured as the sistem clock.
+    // The main PLL clock must not be configured as the system clock.
     pub(crate) fn disable_pll_clock(&self) {
         self.registers.cr.modify(CR::PLLON::CLEAR);
     }
@@ -933,8 +933,10 @@ impl Rcc {
     pub(crate) fn get_mco1_clock_source(&self) -> MCO1Source {
         match self.registers.cfgr.read(CFGR::MCO1) {
             0b00 => MCO1Source::HSI,
+            // When LSE or HSE are added, uncomment the following lines
             //0b01 => MCO1Source::LSE,
             //0b10 => MCO1Source::HSE,
+            // 0b11 corresponds to MCO1Source::PLL
             _ => MCO1Source::PLL,
         }
     }
@@ -1339,6 +1341,13 @@ pub(crate) enum PLLP {
     DivideBy4 = 0b01,
     DivideBy6 = 0b10,
     DivideBy8 = 0b11,
+}
+
+impl From<PLLP> for usize {
+    // (variant_value + 1) * 2 = X for X in DivideByX
+    fn from(item: PLLP) -> Self {
+        (item as usize + 1) << 1
+    }
 }
 
 // Theoretically, the PLLM value can range from 2 to 63. However, the current implementation was
