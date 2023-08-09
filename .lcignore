@@ -30,3 +30,6 @@
 /tools/license-checker/testdata/many_errors.rs
 /tools/license-checker/testdata/no_copyright.rs
 /tools/license-checker/testdata/no_spdx.rs
+
+# TODO: remove!
+/0001-target-riscv-pmp.c-respect-mseccfg.RLB-for-pmpaddrX-.patch

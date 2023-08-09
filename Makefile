@@ -519,7 +519,11 @@ define ci_setup_qemu_riscv
 	@# Use the latest QEMU as it has OpenTitan support
 	@printf "Building QEMU, this could take a few minutes\n\n"
 	@git clone https://github.com/qemu/qemu ./tools/qemu 2>/dev/null || echo "qemu already cloned, checking out"
-	@cd tools/qemu; git checkout ${QEMU_COMMIT_HASH}; ../qemu/configure --target-list=riscv32-softmmu --disable-linux-io-uring --disable-libdaxctl;
+	@cd tools/qemu; git checkout ${QEMU_COMMIT_HASH}
+	@cd tools/qemu; git config user.name "Tock CI"
+	@cd tools/qemu; git config user.email "ci@tockos.org"
+	@cd tools/qemu; git am ../../0001-target-riscv-pmp.c-respect-mseccfg.RLB-for-pmpaddrX-.patch
+	@cd tools/qemu; ./configure --target-list=riscv32-softmmu --disable-linux-io-uring --disable-libdaxctl;
 	@# Build qemu
 	@$(MAKE) -C "tools/qemu/build" -j2 || (echo "You might need to install some missing packages" || exit 127)
 endef
