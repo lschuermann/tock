@@ -465,7 +465,35 @@ pub unsafe fn main() {
     // Start the process console:
     let _ = platform.pconsole.start();
 
-    debug!("QEMU RISC-V 32-bit \"virt\" machine, initialization complete.");
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    let dummysvc_binary = contsvc::ContSvcBinary::find(
+        "dummysvc",
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ),
+    )
+    .unwrap();
+
+    let dummysvc = contsvc::ContSvc::new(
+        chip,
+        dummysvc_binary,
+        &_dsvcram_start as *const u8 as *mut u8,
+        &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+    )
+    .unwrap();
+
+    dummysvc.invoke_service(0x80100080 as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+
+    debug!(
+        "QEMU RISC-V 32-bit \"virt\" machine, initialization complete: {:p}, {:p}.",
+        &_dsvcram_start as *const u8, &_dsvcram_end as *const u8
+    );
     debug!("Entering main loop.");
 
     // These symbols are defined in the linker script.

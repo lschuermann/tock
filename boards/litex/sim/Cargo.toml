@@ -17,3 +17,6 @@ litex_vexriscv = { path = "../../../chips/litex_vexriscv" }
 
 capsules-core = { path = "../../../capsules/core" }
 capsules-extra = { path = "../../../capsules/extra" }
+
+encapfn = { path = "../../../capsules/foreign/encapfn" }
+dummy-wrapper = { path = "../../../capsules/foreign/dummy/wrapper" }

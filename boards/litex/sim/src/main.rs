@@ -590,7 +590,51 @@ pub unsafe fn main() {
     )
     .finalize(components::low_level_debug_component_static!());
 
-    debug!("Verilated LiteX+VexRiscv: initialization complete, entering main loop.");
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    let dummyfn_binary = encapfn::binary::EncapfnBinary::find(
+        "dummyfn",
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ),
+    )
+    .unwrap();
+
+    let dummyfn = encapfn::rt::EncapfnRt::new(
+        chip,
+        dummyfn_binary,
+        &_dsvcram_start as *const u8 as *mut u8,
+        &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+    )
+    .unwrap();
+
+    let res = dummy_wrapper::call_test_pointer_manipulation(&dummyfn);
+
+    // let res = dummysvc
+    //     .invoke_service(
+    //         // testclib_add
+    //         dummysvc.resolve_function_pointer(0).unwrap(),
+    //         1,
+    //         2,
+    //         0,
+    //         0,
+    //         0,
+    //         0,
+    //         0,
+    //         0,
+    //         false,
+    //     )
+    //     .unwrap();
+
+    panic!(
+        "Verilated LiteX+VexRiscv: initialization complete, entering main loop: {:?}",
+        res,
+    );
 
     // These symbols are defined in the linker script.
     extern "C" {

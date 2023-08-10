@@ -592,11 +592,11 @@ impl Kernel {
                         .context_switch_callback()
                         .context_switch_hook(process);
                     process.setup_mpu();
-                    chip.mpu().enable_app_mpu();
                     scheduler_timer.arm();
+                    chip.mpu().enable_app_mpu();
                     let context_switch_reason = process.switch_to();
-                    scheduler_timer.disarm();
                     chip.mpu().disable_app_mpu();
+                    scheduler_timer.disarm();
 
                     // Now the process has returned back to the kernel. Check
                     // why and handle the process as appropriate.

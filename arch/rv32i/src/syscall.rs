@@ -388,7 +388,6 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // executing. We will still be in the trap handler context, and have
           // to switch back to kernel mode using `mret` accordingly.
         100: // _app_trap_continue
-
           // At this point all we know is that we entered the trap handler
           // from an app. We don't know _why_ we got a trap, it could be from
           // an interrupt, syscall, or fault (or maybe something else).
@@ -458,7 +457,7 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           lw   t0, 1*4(sp)
           sw   t0, 18*4(s3)
 
-          // We also need to store the app stack pointer, mcause, and mepc:
+          // We also need to store a few CSRs:
           //
           // We store mepc persistently because it is where we need to return to
           // the app at some point.
@@ -496,7 +495,7 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // continue execution in this context switch code:
           lui  t0, %hi(300f)
           addi t0, t0, %lo(300f)
-          csrw 0x341, t0    // CSR=0x341=mepc
+          csrw mepc, t0
 
           // Need to set mstatus.MPP to 0b11 so that we stay in machine mode.
           csrr t0, 0x300    // CSR=0x300=mstatus
@@ -524,6 +523,10 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           // it. This saves Rust from stacking a register.
 
           addi sp, sp, 8*4   // Reset kernel stack pointer
+
+          // li x5, 0x10004000
+          // mv x7, sp
+          // slt x6, x5, x7
           ",
 
           // Stored process state. Loaded into a callee-saved register to avoid
