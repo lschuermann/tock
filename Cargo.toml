@@ -52,6 +52,7 @@ members = [
     "capsules/extra",
     "capsules/foreign/encapfn",
     "capsules/foreign/dummy/wrapper",
+    "capsules/foreign/opentitan-cryptolib/wrapper",
     "chips/apollo3",
     "chips/arty_e21_chip",
     "chips/e310_g002",
