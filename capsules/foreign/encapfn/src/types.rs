@@ -5,8 +5,6 @@ use core::ops::Deref;
 
 use kernel::platform::chip::Chip;
 
-use crate::rt::EncapfnRt;
-
 pub unsafe trait EFType {
     // For primitives, verify that type layout is correct. For
     // references, make sure that the entire reference is in
@@ -41,8 +39,8 @@ impl<'alloc, T> EFAllocation<'alloc, T> {
     pub fn initialize<'access>(
         self,
         val: T,
-        alloc_scope: &'alloc AllocScope<'alloc>,
-        access_scope: &'access AccessScope<'access>,
+        _alloc_scope: &'alloc AllocScope,
+        _access_scope: &'access AccessScope,
     ) -> EFMutRefVal<'alloc, 'access, T> {
         // Move T into the allocation, and return it as an EFMutRefVal
         let initialized = self.inner.write(EFMutTyVal {
@@ -57,7 +55,7 @@ impl<'alloc, T> EFAllocation<'alloc, T> {
         }
     }
 
-    pub fn into_ref(self, alloc_scope: &'alloc AllocScope<'alloc>) -> EFMutRef<'alloc, T> {
+    pub fn into_ref(self, _alloc_scope: &'alloc AllocScope) -> EFMutRef<'alloc, T> {
         EFMutRef {
             ptr: EFMutPtr {
                 inner: self.inner.as_ptr() as *const EFMutTy<T>,
@@ -93,7 +91,7 @@ impl<'alloc, 'access, T> Clone for EFMutRefVal<'alloc, 'access, T> {
 
 impl<'alloc, 'access, T> Copy for EFMutRefVal<'alloc, 'access, T> {}
 
-// A reference which is validated to be contained in
+// A reference which is validated to be well-aligned and contained in
 // mutably-accessible memory
 #[repr(transparent)]
 pub struct EFMutRef<'alloc, T> {
@@ -115,7 +113,7 @@ impl<'alloc, T> Copy for EFMutRef<'alloc, T> {}
 impl<'alloc, T: EFType> EFMutRef<'alloc, T> {
     pub fn validate<'access>(
         self,
-        access_scope: &'access AccessScope<'access>,
+        access_scope: &'access AccessScope,
     ) -> Result<EFMutRefVal<'alloc, 'access, T>, Self> {
         if let Some(val) = self.validate_ref(access_scope) {
             Ok(*val)
@@ -126,27 +124,45 @@ impl<'alloc, T: EFType> EFMutRef<'alloc, T> {
 
     pub fn validate_ref<'access>(
         &self,
-        access_scope: &'access AccessScope<'access>,
+        access_scope: &'access AccessScope,
     ) -> Option<&EFMutRefVal<'alloc, 'access, T>> {
         if <T as EFType>::validate(self.ptr.inner as *mut EFMutTy<T> as *mut T) {
-            // We can transmute here, as &'a UnsafeCell<T> and *const
-            // UnsafeCell<T> are type-layout compatible, and both
-            // `EFMutRef` and `EFMutRefVal` are `repr(transparent)`
-            // wrappers around these respective types.
-            Some(unsafe {
-                core::mem::transmute::<&EFMutRef<'alloc, T>, &EFMutRefVal<'alloc, 'access, T>>(
-                    &self,
-                )
-            })
+            Some(unsafe { self.assume_valid_ref(access_scope) })
         } else {
             None
         }
     }
+
+    pub unsafe fn assume_valid_ref<'access>(
+        &self,
+        _access_scope: &'access AccessScope,
+    ) -> &EFMutRefVal<'alloc, 'access, T> {
+        // We can transmute here, as &'a UnsafeCell<T> and *const
+        // UnsafeCell<T> are type-layout compatible, and both
+        // `EFMutRef` and `EFMutRefVal` are `repr(transparent)`
+        // wrappers around these respective types.
+        unsafe {
+            core::mem::transmute::<&EFMutRef<'alloc, T>, &EFMutRefVal<'alloc, 'access, T>>(&self)
+        }
+    }
+
+    // Doesn't work due to lifetime constraints. Could probably use a closure
+    // with a more restricted scope?
+    //
+    // pub fn write_access<'access>(&self, val: T, access_scope: &'access mut AccessScope)
+    //   -> &EFMutRefVal<'alloc, 'access, T> {
+    //  self.write(val, access_scope);
+    //  unsafe { self.assume_valid_ref(access_scope) }
+    // }
 }
 
 impl<'alloc, T> EFMutRef<'alloc, T> {
     pub fn into_ptr(self) -> EFMutPtr<T> {
         self.ptr
+    }
+
+    pub fn write(&self, val: T, _access_scope: &mut AccessScope) {
+        unsafe { core::ptr::write((*self.ptr.inner).inner.get(), val) };
     }
 }
 
@@ -161,12 +177,6 @@ impl<'alloc, 'access, T> From<EFMutRefVal<'alloc, 'access, T>> for EFMutRef<'all
     }
 }
 
-// #[repr(transparent)]
-// struct EFMutSlice<'a, T> {
-//     ptr: *const UnsafeCell<T>,
-
-// }
-
 #[repr(transparent)]
 pub struct EFMutTy<T> {
     inner: UnsafeCell<T>,
@@ -180,31 +190,15 @@ impl<T> From<T> for EFMutTy<T> {
     }
 }
 
-// impl<T: Clone> Clone for EFMutTy<T> {
-//     fn clone(&self) -> Self {
-
+// impl<T: EFType> EFMutTy<T> {
+//     pub fn validate_ref<'access>(&'s self, _access_scope: &'access AccessScope) -> Option<&'s EFMutTyVal<T>> {
+//         if <T as EFType>::validate(UnsafeCell::get(&self.inner)) {
+//             Some(unsafe { core::mem::transmute::<&EFMutTy<T>, &EFMutTyVal<T>>(&self) })
+//         } else {
+//             None
+//         }
 //     }
 // }
-
-impl<T: EFType> EFMutTy<T> {
-    // pub fn validate(self) -> Option<EFMutTyVal<T>> {
-    //  if <T as EFType>::validate(UnsafeCell::raw_get(&self.inner)) {
-    //      Some(EFMutTyVal {
-    //          inner: unsafe { core::mem::transmute::<UnsafeCell<T>, Cell<T>>(self.inner) },
-    //      })
-    //  } else {
-    //      None
-    //  }
-    // }
-
-    pub fn validate_ref<'s>(&'s self) -> Option<&'s EFMutTyVal<T>> {
-        if <T as EFType>::validate(UnsafeCell::get(&self.inner)) {
-            Some(unsafe { core::mem::transmute::<&EFMutTy<T>, &EFMutTyVal<T>>(&self) })
-        } else {
-            None
-        }
-    }
-}
 
 #[repr(transparent)]
 pub struct EFMutTyVal<T> {
@@ -219,27 +213,43 @@ impl<T> From<T> for EFMutTyVal<T> {
     }
 }
 
-impl<T> Deref for EFMutTyVal<T> {
-    type Target = Cell<T>;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { core::mem::transmute::<&UnsafeCell<T>, &Cell<T>>(&self.inner) }
+impl<T: Copy> EFMutTyVal<T> {
+    pub fn get(&self) -> T {
+        unsafe { *self.inner.get() }
     }
 }
 
-pub struct AllocScope<'a>(PhantomData<&'a ()>);
-impl<'a> AllocScope<'a> {
-    // TODO: remove!
-    pub fn new() -> Self {
-        AllocScope(PhantomData)
+impl<const N: usize, T: Copy> EFMutTyVal<[T; N]> {
+    pub fn as_array_ref(&self) -> &[EFMutTyVal<T>; N] {
+        // TODO: const-assert that align and size match!
+        unsafe { core::mem::transmute::<&EFMutTyVal<[T; N]>, &[EFMutTyVal<T>; N]>(self) }
     }
 }
 
-pub struct AccessScope<'a>(PhantomData<&'a ()>);
-impl<'a> AccessScope<'a> {
+// This is illegal, as the resulting Cell would not be bound to an access-scope,
+// and its contents can be changed to an invalid value by some aliased reference.
+//
+// impl<T> Deref for EFMutTyVal<T> {
+//     type Target = Cell<T>;
+
+//     fn deref(&self) -> &Self::Target {
+//         unsafe { core::mem::transmute::<&UnsafeCell<T>, &Cell<T>>(&self.inner) }
+//     }
+// }
+
+pub struct AllocScope;
+impl AllocScope {
     // TODO: remove!
     pub fn new() -> Self {
-        AccessScope(PhantomData)
+        AllocScope
+    }
+}
+
+pub struct AccessScope;
+impl AccessScope {
+    // TODO: remove!
+    pub fn new() -> Self {
+        AccessScope
     }
 }
 
@@ -265,25 +275,24 @@ impl<T: Sized> EFMutPtr<T> {
         }
     }
 
-    // Unsafe as this allows creating mutable (UnsafeCell) reference,
-    // which is not sound if this aliases some Rust refrences that are
-    // not behind an UnsafeCell
-    pub unsafe fn from_t_ptr(ptr: *mut T) -> Self {
+    // Safe, as this pointer is cannot be safely dereferenced. When
+    pub fn from_t_ptr(ptr: *mut T) -> Self {
         EFMutPtr {
             inner: ptr as *const _ as *const EFMutTy<T>,
         }
     }
 
-    pub unsafe fn into_ref_unchecked<'a>(self, alloc_scope: &'a AllocScope<'a>) -> EFMutRef<'a, T> {
+    pub unsafe fn into_ref_unchecked<'a>(self, _alloc_scope: &'a AllocScope) -> EFMutRef<'a, T> {
         EFMutRef {
             ptr: self,
             _lt: PhantomData,
         }
     }
 
-    pub fn into_ref<'a>(self, alloc_scope: &'a AllocScope<'a>) -> Option<EFMutRef<'a, T>> {
+    pub fn into_ref<'a>(self, _alloc_scope: &'a AllocScope) -> Option<EFMutRef<'a, T>> {
         // TODO: check that object pointed to is in mutably accessible
-        // memory
+        // memory. We can probably put some associated data into the AllocScope
+        // for this check, or have that reference the EncapfnRt.
         Some(EFMutRef {
             ptr: self,
             _lt: PhantomData,
@@ -292,7 +301,7 @@ impl<T: Sized> EFMutPtr<T> {
 
     pub fn as_ref<'a, 's, C: Chip>(
         &'s self,
-        alloc_scope: &'a AllocScope<'a>,
+        _alloc_scope: &'a AllocScope,
     ) -> Option<&'s EFMutRef<'a, T>> {
         // TODO: check that object pointed to is in mutably accessible
         // memory, and well-aligned.
@@ -303,7 +312,7 @@ impl<T: Sized> EFMutPtr<T> {
 
     pub fn as_slice_ref<'a, 's, C: Chip>(
         &'s self,
-        alloc_scope: &'a AllocScope<'a>,
+        _alloc_scope: &'a AllocScope,
         length: usize,
     ) -> Option<&'a [EFMutTy<T>]> {
         Some(unsafe { core::slice::from_raw_parts(self.inner, length) })

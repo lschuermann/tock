@@ -183,8 +183,8 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
     }
 
     // TODO: this should only be able to hand out one scope at a time!
-    pub fn enter_scope<'a>(&'a self) -> (AllocScope<'a>, AccessScope<'a>) {
-        (AllocScope::new(), AccessScope::new())
+    pub fn enter_scope<'a>(&'a self) -> Option<(AllocScope, AccessScope)> {
+        Some((AllocScope::new(), AccessScope::new()))
     }
 
     pub fn allocate_stacked<F, R>(&self, size: usize, align: usize, fun: F) -> Result<R, ErrorCode>
@@ -209,67 +209,58 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
 
     pub fn allocate_stacked_t<'a, T: Sized, F, R>(
         &self,
-        alloc_scope: AllocScope<'a>,
+        _alloc_scope: &'a mut AllocScope,
         fun: F,
-    ) -> (Result<R, ErrorCode>, AllocScope<'a>)
+    ) -> Result<R, ErrorCode>
     where
-        F: FnOnce(EFAllocation<'_, T>, AllocScope<'_>) -> R,
+        F: FnOnce(EFAllocation<'_, T>, &mut AllocScope) -> R,
     {
-        (
-            self.allocate_stacked(
-                core::mem::size_of::<T>(),
-                core::mem::align_of::<T>(),
-                |allocated_ptr| {
-                    fun(
-                        unsafe { EFAllocation::from_allocated_ptr(allocated_ptr) },
-                        AllocScope::new(),
-                    )
-                },
-            ),
-            alloc_scope,
+        self.allocate_stacked(
+            core::mem::size_of::<T>(),
+            core::mem::align_of::<T>(),
+            |allocated_ptr| {
+                fun(
+                    unsafe { EFAllocation::from_allocated_ptr(allocated_ptr) },
+                    &mut AllocScope::new(),
+                )
+            },
         )
     }
 
     pub fn allocate_stacked_array<'a, const N: usize, T: Sized, F, R>(
         &self,
-        alloc_scope: AllocScope<'a>,
+        _alloc_scope: &'a mut AllocScope,
         fun: F,
-    ) -> (Result<R, ErrorCode>, AllocScope<'a>)
+    ) -> Result<R, ErrorCode>
     where
-        F: FnOnce(*mut [T; N], AllocScope<'_>) -> R,
+        F: FnOnce(*mut [T; N], &mut AllocScope) -> R,
     {
-        (
-            self.allocate_stacked(
-                core::mem::size_of::<T>() * N,
-                core::mem::align_of::<T>(),
-                |allocated_ptr| fun(allocated_ptr as *mut [T; N], AllocScope::new()),
-            ),
-            alloc_scope,
+        self.allocate_stacked(
+            core::mem::size_of::<T>() * N,
+            core::mem::align_of::<T>(),
+            |allocated_ptr| fun(allocated_ptr as *mut [T; N], &mut AllocScope::new()),
         )
     }
 
     pub fn allocate_stacked_slice<'a, T, F, R>(
         &self,
         len: usize,
-        alloc_scope: AllocScope<'a>,
+        _alloc_scope: &'a mut AllocScope,
         fun: F,
-    ) -> (Result<R, ErrorCode>, AllocScope<'a>)
+    ) -> Result<R, ErrorCode>
     where
-        F: FnOnce(*mut [T], AllocScope<'_>) -> R,
+        F: FnOnce(*mut [T], &mut AllocScope) -> R,
     {
-        (
-            self.allocate_stacked(
-                core::mem::size_of::<T>() * len,
-                core::mem::align_of::<T>(),
-                |allocated_ptr| {
-                    fun(
-                        unsafe { core::slice::from_raw_parts_mut(allocated_ptr as *mut T, len) }
-                            as *mut [T],
-                        AllocScope::new(),
-                    )
-                },
-            ),
-            alloc_scope,
+        self.allocate_stacked(
+            core::mem::size_of::<T>() * len,
+            core::mem::align_of::<T>(),
+            |allocated_ptr| {
+                fun(
+                    unsafe { core::slice::from_raw_parts_mut(allocated_ptr as *mut T, len) }
+                        as *mut [T],
+                    &mut AllocScope::new(),
+                )
+            },
         )
     }
 
@@ -307,8 +298,8 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
         a5: usize,
         a6: usize,
         a7: usize,
-        access_scope: AccessScope<'a>,
-    ) -> (Result<(usize, usize), ()>, AccessScope<'a>) {
+        access_scope: AccessScope,
+    ) -> (Result<(usize, usize), ()>, AccessScope) {
         use core::arch::asm;
 
         // Make sure that the stack is always aligned to a multiple of 4 words

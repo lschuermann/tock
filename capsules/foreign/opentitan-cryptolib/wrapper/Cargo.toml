@@ -1,0 +1,9 @@
+[package]
+name = "opentitan-cryptolib-wrapper"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+kernel = { path = "../../../../kernel" }
+encapfn = { path = "../../encapfn" }
