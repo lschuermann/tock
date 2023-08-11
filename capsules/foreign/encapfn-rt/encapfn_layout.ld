@@ -23,7 +23,7 @@ SECTIONS {
     /* Containerized service header.
      */
     . = ALIGN(4);
-    .contsvc_header : {
+    .text : {
         /* We define start here, in the first section to be included
          * in FLASH. This makes the linker and elf2tab happy, but we
          * don't actually use this symbol. */
@@ -36,10 +36,9 @@ SECTIONS {
         LONG(contsvc_fntab - ORIGIN(FLASH));
 
         KEEP(*(.contsvc_hdr));
-    } > FLASH
 
-    /* Text section -- the application's code. */
-    .text ALIGN(4) : {
+        . = ALIGN(4);
+
         contsvc_rthdr = .;
 
         LONG(LOADADDR(.data));
