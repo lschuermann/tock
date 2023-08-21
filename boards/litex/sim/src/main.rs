@@ -631,7 +631,7 @@ pub unsafe fn main() {
     //     )
     //     .unwrap();
 
-    panic!(
+    debug!(
         "Verilated LiteX+VexRiscv: initialization complete, entering main loop: {:?}",
         res,
     );

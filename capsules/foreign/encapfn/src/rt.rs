@@ -184,7 +184,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
 
     // TODO: this should only be able to hand out one scope at a time!
     pub fn enter_scope<'a>(&'a self) -> Option<(AllocScope, AccessScope)> {
-        Some((AllocScope::new(), AccessScope::new()))
+        Some((unsafe { AllocScope::new() }, unsafe { AccessScope::new() }))
     }
 
     pub fn allocate_stacked<F, R>(&self, size: usize, align: usize, fun: F) -> Result<R, ErrorCode>
@@ -221,7 +221,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
             |allocated_ptr| {
                 fun(
                     unsafe { EFAllocation::from_allocated_ptr(allocated_ptr) },
-                    &mut AllocScope::new(),
+                    &mut unsafe { AllocScope::new() },
                 )
             },
         )
@@ -238,7 +238,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
         self.allocate_stacked(
             core::mem::size_of::<T>() * N,
             core::mem::align_of::<T>(),
-            |allocated_ptr| fun(allocated_ptr as *mut [T; N], &mut AllocScope::new()),
+            |allocated_ptr| fun(allocated_ptr as *mut [T; N], &mut unsafe { AllocScope::new() }),
         )
     }
 
@@ -258,7 +258,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
                 fun(
                     unsafe { core::slice::from_raw_parts_mut(allocated_ptr as *mut T, len) }
                         as *mut [T],
-                    &mut AllocScope::new(),
+                    &mut unsafe { AllocScope::new() },
                 )
             },
         )
@@ -298,8 +298,8 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
         a5: usize,
         a6: usize,
         a7: usize,
-        access_scope: AccessScope,
-    ) -> (Result<(usize, usize), ()>, AccessScope) {
+        access_scope: &mut AccessScope,
+    ) -> Result<(usize, usize), ()> {
         use core::arch::asm;
 
         // Make sure that the stack is always aligned to a multiple of 4 words
@@ -309,7 +309,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
         let aligned_stack_ptr =
             ((original_stack_ptr as usize) - (original_stack_ptr as usize % 16)) as *mut u8;
         if (aligned_stack_ptr as usize) < (self.ram_region_start as usize) {
-            return (Err(()), access_scope);
+            return Err(());
         }
 
         self.chip.mpu().configure_mpu(&self.mpu_config);
@@ -784,7 +784,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
         if service_mcause == 8 || (service_mcause == 1 && service_mtval == return_to_kernel_addr) {
             // The service voluntarily ceased control by returning to the
             // address specified in `ra`.
-            (Ok((a0, a1)), access_scope)
+            Ok((a0, a1))
         } else {
             // The service faulted. TODO: do something sensible instead of
             // panicing.
@@ -806,7 +806,7 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
 
     pub fn init(&self) -> Result<(), ()> {
         // panic!("Init offset: {}", self.init_offset);
-        let (res, _) = self.invoke_service(
+        let (a0, _) = self.invoke_service(
             unsafe { self.binary.binary_start.add(self.init_offset) } as *const fn(),
             unsafe { self.binary.binary_start.add(self.rthdr_offset) } as usize,
             0,
@@ -816,10 +816,8 @@ impl<'c, C: Chip> EncapfnRt<'c, C> {
             0,
             0,
             0,
-            AccessScope::new(),
-        );
-
-        let (a0, _) = res?;
+            &mut unsafe { AccessScope::new() },
+        )?;
 
         if a0 != 0 {
             panic!("Init failed: {}", a0);

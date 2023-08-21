@@ -6,8 +6,9 @@ use encapfn::types::*;
 // verify that this has a compatible type layout to the C struct, as
 // bindgen does.
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub struct HmacContext {
-    pub data: EFMutTy<[u32; 42usize]>,
+    pub data: [u32; 42usize],
 }
 
 unsafe impl EFType for HmacContext {

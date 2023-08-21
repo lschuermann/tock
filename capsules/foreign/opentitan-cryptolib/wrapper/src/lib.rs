@@ -71,23 +71,32 @@ impl<'client, 'chip, C: Chip> CryptolibHmac<'client, 'chip, C> {
                 self.rt.allocate_stacked_t::<wrapped::HmacContext, _, _>(
                     &mut alloc_scope,
                     |hmac_context_alloc, mut alloc_scope| {
+                        use core::ops::Deref;
+
                         let hmac_context_ref = hmac_context_alloc.into_ref(&alloc_scope);
                         hmac_context_ref.write(hmac_context_rust.clone(), &mut access_scope);
+                        let hmac_context_ptr = hmac_context_ref.as_ptr();
 
                         let res = fun(
-                            hmac_context_ref.into_ptr(),
+                            hmac_context_ref.as_ptr(),
                             &mut alloc_scope,
                             &mut access_scope,
                         );
 
-                        let hmac_context_ref_val =
-                            hmac_context_ref.validate_ref(&access_scope).unwrap();
-                        // {
-                        //     let hmac_context: &bindgen::hmac_context_t =
-                        //         unsafe { &*hmac_context_ptr };
-                        //     hmac_context_rust.data.copy_from_slice(&hmac_context.data);
-                        // }
-                        //
+                        let hmac_context_ref_val = hmac_context_ptr
+                            .upgrade(&alloc_scope)
+                            .unwrap()
+                            .validate(&access_scope)
+                            .unwrap();
+
+                        wrapped::HmacContext::data(hmac_context_ref_val)
+                            .validate(&access_scope)
+                            .unwrap()
+                            .as_array()
+                            .iter()
+                            .zip(hmac_context_rust.data.iter_mut())
+                            .for_each(|(src, dst)| *dst = **src);
+
                         Ok(res)
                     },
                 )

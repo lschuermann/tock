@@ -711,7 +711,9 @@ impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static> kernel::pla
 
     fn configure_mpu(&self, config: &Self::MpuConfig) {
         if !self.last_configured_for.contains(&config.id) || config.is_dirty.get() {
-            self.pmp.configure_pmp(&config.regions).unwrap()
+            self.pmp.configure_pmp(&config.regions).unwrap();
+	    config.is_dirty.set(false);
+	    self.last_configured_for.set(config.id);
         }
     }
 }
