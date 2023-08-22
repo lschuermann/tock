@@ -68,6 +68,7 @@
 //! | P0.27 | P24 17 | I2C SCL  |
 
 #![no_std]
+#![feature(iter_next_chunk)]
 // Disable this attribute when documenting, as a workaround for
 // https://github.com/rust-lang/rust/issues/62184.
 #![cfg_attr(not(doc), no_main)]
@@ -83,6 +84,7 @@ use kernel::hil::time::Counter;
 use kernel::hil::usb::Client;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::scheduler::round_robin::RoundRobinSched;
+use kernel::static_buf;
 #[allow(unused_imports)]
 use kernel::{capabilities, create_capability, debug, debug_gpio, debug_verbose, static_init};
 use nrf52840::gpio::Pin;
@@ -154,7 +156,8 @@ static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText>
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
-pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
+pub static mut STACK_MEMORY: [u8; 0x4000] = [0; 0x4000];
+
 
 /// Supported drivers by the platform
 pub struct Platform {
@@ -193,8 +196,6 @@ pub struct Platform {
             nrf52840::rtc::Rtc<'static>,
         >,
     >,
-    nonvolatile_storage:
-        &'static capsules_extra::nonvolatile_storage_driver::NonvolatileStorage<'static>,
     udp_driver: &'static capsules_extra::net::udp::UDPDriver<'static>,
     i2c_master_slave: &'static capsules_core::i2c_master_slave_driver::I2CMasterSlaveDriver<
         'static,
@@ -205,6 +206,33 @@ pub struct Platform {
         capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
             'static,
             nrf52840::spi::SPIM<'static>,
+        >,
+    >,
+    kv_driver: &'static capsules_extra::kv_driver::KVStoreDriver<
+        'static,
+        capsules_extra::virtual_kv::VirtualKVPermissions<
+            'static,
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                'static,
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    'static,
+                    capsules_extra::tickv::TicKVSystem<
+                        'static,
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            'static,
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM<'static>,
+                            >,
+                            nrf52840::gpio::GPIOPin<'static>,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        { capsules_extra::mx25r6435f::SECTOR_SIZE as usize },
+                    >,
+                    [u8; 8],
+                >,
+            >,
         >,
     >,
     scheduler: &'static RoundRobinSched<'static>,
@@ -228,13 +256,11 @@ impl SyscallDriverLookup for Platform {
             capsules_extra::ieee802154::DRIVER_NUM => f(Some(self.ieee802154_radio)),
             capsules_extra::temperature::DRIVER_NUM => f(Some(self.temp)),
             capsules_extra::analog_comparator::DRIVER_NUM => f(Some(self.analog_comparator)),
-            capsules_extra::nonvolatile_storage_driver::DRIVER_NUM => {
-                f(Some(self.nonvolatile_storage))
-            }
             capsules_extra::net::udp::DRIVER_NUM => f(Some(self.udp_driver)),
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
             capsules_core::i2c_master_slave_driver::DRIVER_NUM => f(Some(self.i2c_master_slave)),
             capsules_core::spi_controller::DRIVER_NUM => f(Some(self.spi_controller)),
+            capsules_extra::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
             _ => f(None),
         }
     }
@@ -678,25 +704,175 @@ pub unsafe fn main() {
         nrf52840::rtc::Rtc
     ));
 
-    // API for accessing nonvolatile storage for both the kernel and userspace.
-    let nonvolatile_storage = components::nonvolatile_storage::NonvolatileStorageComponent::new(
-        board_kernel,
-        capsules_extra::nonvolatile_storage_driver::DRIVER_NUM,
-        mx25r6435f,
-        0x60000,   // Start address for userspace accessible region
-        0x3FA0000, // Length of userspace accessible region
-        0,         // Start address of kernel region
-        0x60000,   // Length of kernel region
-    )
-    .finalize(components::nonvolatile_storage_component_static!(
-        capsules_extra::mx25r6435f::MX25R6435F<
-            'static,
+    //--------------------------------------------------------------------------
+    // TICKV
+    //--------------------------------------------------------------------------
+
+    const TICKV_PAGE_SIZE: usize = core::mem::size_of::<
+        <capsules_extra::mx25r6435f::MX25R6435F<
             capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
                 'static,
                 nrf52840::spi::SPIM,
             >,
             nrf52840::gpio::GPIOPin,
             VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        > as kernel::hil::flash::Flash>::Page,
+    >();
+
+    // Static buffer to use when reading/writing flash for TicKV.
+    let page_buffer = static_init!(
+        <capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        > as kernel::hil::flash::Flash>::Page,
+        <capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        > as kernel::hil::flash::Flash>::Page::default()
+    );
+
+    // SipHash for creating TicKV hashed keys.
+    let sip_hash = components::siphash::Siphasher24Component::new()
+        .finalize(components::siphasher24_component_static!());
+
+    // TicKV with Tock wrapper/interface.
+    let tickv = components::tickv::TicKVDedicatedFlashComponent::new(
+        sip_hash,
+        mx25r6435f,
+        0, // start at the beginning of the flash chip
+        (capsules_extra::mx25r6435f::SECTOR_SIZE as usize) * 32, // arbitrary size of 32 pages
+        page_buffer,
+    )
+    .finalize(components::tickv_dedicated_flash_component_static!(
+        capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        >,
+        capsules_extra::sip_hash::SipHasher24,
+        TICKV_PAGE_SIZE,
+    ));
+
+    // KVSystem interface to KV (built on TicKV).
+    let tickv_kv_store = components::kv::TicKVKVStoreComponent::new(tickv).finalize(
+        components::tickv_kv_store_component_static!(
+            capsules_extra::tickv::TicKVSystem<
+                capsules_extra::mx25r6435f::MX25R6435F<
+                    capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                        'static,
+                        nrf52840::spi::SPIM,
+                    >,
+                    nrf52840::gpio::GPIOPin,
+                    VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                >,
+                capsules_extra::sip_hash::SipHasher24<'static>,
+                TICKV_PAGE_SIZE,
+            >,
+            capsules_extra::tickv::TicKVKeyType,
+        ),
+    );
+
+    let kv_store_permissions = components::kv::KVStorePermissionsComponent::new(tickv_kv_store)
+        .finalize(components::kv_store_permissions_component_static!(
+            capsules_extra::tickv_kv_store::TicKVKVStore<
+                capsules_extra::tickv::TicKVSystem<
+                    capsules_extra::mx25r6435f::MX25R6435F<
+                        capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                            'static,
+                            nrf52840::spi::SPIM,
+                        >,
+                        nrf52840::gpio::GPIOPin,
+                        VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                    >,
+                    capsules_extra::sip_hash::SipHasher24<'static>,
+                    TICKV_PAGE_SIZE,
+                >,
+                capsules_extra::tickv::TicKVKeyType,
+            >
+        ));
+
+    // Share the KV stack with a mux.
+    let mux_kv = components::kv::KVPermissionsMuxComponent::new(kv_store_permissions).finalize(
+        components::kv_permissions_mux_component_static!(
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    capsules_extra::tickv::TicKVSystem<
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM,
+                            >,
+                            nrf52840::gpio::GPIOPin,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        TICKV_PAGE_SIZE,
+                    >,
+                    capsules_extra::tickv::TicKVKeyType,
+                >,
+            >
+        ),
+    );
+
+    // Create a virtual component for the userspace driver.
+    let virtual_kv_driver = components::kv::VirtualKVPermissionsComponent::new(mux_kv).finalize(
+        components::virtual_kv_permissions_component_static!(
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    capsules_extra::tickv::TicKVSystem<
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM,
+                            >,
+                            nrf52840::gpio::GPIOPin,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        TICKV_PAGE_SIZE,
+                    >,
+                    capsules_extra::tickv::TicKVKeyType,
+                >,
+            >
+        ),
+    );
+
+    // Userspace driver for KV.
+    let kv_driver = components::kv::KVDriverComponent::new(
+        virtual_kv_driver,
+        board_kernel,
+        capsules_extra::kv_driver::DRIVER_NUM,
+    )
+    .finalize(components::kv_driver_component_static!(
+        capsules_extra::virtual_kv::VirtualKVPermissions<
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    capsules_extra::tickv::TicKVSystem<
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM,
+                            >,
+                            nrf52840::gpio::GPIOPin,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        TICKV_PAGE_SIZE,
+                    >,
+                    capsules_extra::tickv::TicKVKeyType,
+                >,
+            >,
         >
     ));
 
@@ -757,6 +933,10 @@ pub unsafe fn main() {
     // USB EXAMPLES
     //--------------------------------------------------------------------------
     // Uncomment to experiment with this.
+
+    // USB Ethernet example
+    //
+    // test::ethernet_test::setup(nrf52840_peripherals);
 
     // // Create the strings we include in the USB descriptor.
     // let strings = static_init!(
@@ -820,7 +1000,6 @@ pub unsafe fn main() {
         temp,
         alarm,
         analog_comparator,
-        nonvolatile_storage,
         udp_driver,
         ipc: kernel::ipc::IPC::new(
             board_kernel,
@@ -829,6 +1008,7 @@ pub unsafe fn main() {
         ),
         i2c_master_slave,
         spi_controller,
+        kv_driver,
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
     };
