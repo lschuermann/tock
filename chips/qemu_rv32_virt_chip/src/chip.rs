@@ -23,7 +23,7 @@ use crate::interrupts;
 
 use virtio::transports::mmio::VirtIOMMIODevice;
 
-type QemuRv32VirtPMP = rv32i::pmp::PMPUserMPU<8, rv32i::pmp::simple::SimplePMP<8>>;
+type QemuRv32VirtPMP = rv32i::pmp::PMPUserMPU<8, rv32i::pmp::simple::SimplePMP<16>>;
 
 pub type QemuRv32VirtClint<'a> = sifive::clint::Clint<'a, Freq10MHz>;
 
