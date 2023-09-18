@@ -148,10 +148,69 @@ impl
 /// RISC-V setup and RAM initialization.
 #[no_mangle]
 pub unsafe fn main() {
+    // These symbols are defined in the linker script.
+    extern "C" {
+        /// Beginning of the ROM region containing app images.
+        static _sapps: u8;
+        /// End of the ROM region containing app images.
+        static _eapps: u8;
+        /// Beginning of the RAM region for app memory.
+        static mut _sappmem: u8;
+        /// End of the RAM region for app memory.
+        static _eappmem: u8;
+        /// The start of the kernel text (Included only for kernel PMP)
+        static _stext: u8;
+        /// The end of the kernel text (Included only for kernel PMP)
+        static _etext: u8;
+        /// The start of the kernel / app / storage flash (Included only for kernel PMP)
+        static _sflash: u8;
+        /// The end of the kernel / app / storage flash (Included only for kernel PMP)
+        static _eflash: u8;
+        /// The start of the kernel / app RAM (Included only for kernel PMP)
+        static _ssram: u8;
+        /// The end of the kernel / app RAM (Included only for kernel PMP)
+        static _esram: u8;
+    }
+
     // ---------- BASIC INITIALIZATION -----------
 
     // Basic setup of the RISC-V IMAC platform
     rv32i::configure_trap_handler(rv32i::PermissionMode::Machine);
+
+    // Set up memory protection immediately after setting the trap handler, to
+    // ensure that much of the board initialization routine runs with ePMP
+    // protection.
+    let epmp = rv32i::pmp::kernel_protection_mml_epmp::KernelProtectionMMLEPMP::new(
+        rv32i::pmp::kernel_protection_mml_epmp::FlashRegion(
+            rv32i::pmp::NAPOTRegionSpec::new(
+                &_sflash as *const u8,                                           // start
+                &_eflash as *const u8 as usize - &_sflash as *const u8 as usize, // size
+            )
+            .unwrap(),
+        ),
+        rv32i::pmp::kernel_protection_mml_epmp::RAMRegion(
+            rv32i::pmp::NAPOTRegionSpec::new(
+                &_ssram as *const u8,                                          // start
+                &_esram as *const u8 as usize - &_ssram as *const u8 as usize, // size
+            )
+            .unwrap(),
+        ),
+        rv32i::pmp::kernel_protection_mml_epmp::MMIORegion(
+            rv32i::pmp::NAPOTRegionSpec::new(
+                0x00000000 as *const u8, // start
+                0x20000000,              // size
+            )
+            .unwrap(),
+        ),
+        rv32i::pmp::kernel_protection_mml_epmp::KernelTextRegion(
+            rv32i::pmp::TORRegionSpec::new(
+                &_stext as *const u8, // start
+                &_etext as *const u8, // end
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
 
     // Acquire required capabilities
     let process_mgmt_cap = create_capability!(capabilities::ProcessManagementCapability);
@@ -160,6 +219,8 @@ pub unsafe fn main() {
 
     // Create a board kernel instance
     let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&PROCESSES));
+
+    // rv32i::semihost_command(0x18, 1, 0);
 
     // ---------- QEMU-SYSTEM-RISCV32 "virt" MACHINE PERIPHERALS ----------
 
@@ -387,7 +448,7 @@ pub unsafe fn main() {
 
     let chip = static_init!(
         QemuRv32VirtChip<QemuRv32VirtDefaultPeripherals>,
-        QemuRv32VirtChip::new(peripherals, hardware_timer),
+        QemuRv32VirtChip::new(peripherals, hardware_timer, epmp),
     );
     CHIP = Some(chip);
 
@@ -467,18 +528,6 @@ pub unsafe fn main() {
 
     debug!("QEMU RISC-V 32-bit \"virt\" machine, initialization complete.");
     debug!("Entering main loop.");
-
-    // These symbols are defined in the linker script.
-    extern "C" {
-        /// Beginning of the ROM region containing app images.
-        static _sapps: u8;
-        /// End of the ROM region containing app images.
-        static _eapps: u8;
-        /// Beginning of the RAM region for app memory.
-        static mut _sappmem: u8;
-        /// End of the RAM region for app memory.
-        static _eappmem: u8;
-    }
 
     // ---------- PROCESS LOADING, SCHEDULER LOOP ----------
 
