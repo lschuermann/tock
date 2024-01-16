@@ -524,7 +524,41 @@ pub unsafe fn main() {
     // Start the process console:
     let _ = platform.pconsole.start();
 
-    debug!("QEMU RISC-V 32-bit \"virt\" machine, initialization complete.");
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    let dummysvc_binary = encapfn::binary::EncapfnBinary::find(
+        "dummyfn",
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ),
+    )
+    .unwrap();
+
+    let res = encapfn::branding::new(|id| {
+        let (dummysvc, mut alloc_scope, mut access_scope) =
+            encapfn::tock_rv32i_c_rt::EncapfnTockRv32iCRt::new(
+                kernel::platform::chip::Chip::mpu(chip),
+                dummysvc_binary,
+                &_dsvcram_start as *const u8 as *mut u8,
+                &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+                id,
+            )
+            .unwrap();
+
+        dummy_wrapper::test_add(&dummysvc, &mut alloc_scope, &mut access_scope, 1, 2)
+    });
+
+    // dummysvc.invoke_service(0x80100080 as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+
+    debug!(
+        "QEMU RISC-V 32-bit \"virt\" machine, initialization complete: {:p}, {:p}; res: {:?}.",
+        &_dsvcram_start as *const u8, &_dsvcram_end as *const u8, res,
+    );
     debug!("Entering main loop.");
 
     // ---------- PROCESS LOADING, SCHEDULER LOOP ----------
