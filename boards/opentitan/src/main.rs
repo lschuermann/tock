@@ -874,6 +874,36 @@ unsafe fn setup() -> (
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
+
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _dsvcram_start: u8;
+        static _dsvcram_end: u8;
+    }
+
+    // panic!("Pre-parse binary!");
+
+    // let dummysvc_binary = contsvc::ContSvcBinary::find(
+    //     "cryptolib_cmpsvc",
+    //     core::slice::from_raw_parts(
+    //         &_sapps as *const u8,
+    //         &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+    //     ),
+    // )
+    // .unwrap();
+
+    // // panic!("Parsed binary header!");
+
+    // let dummysvc = contsvc::ContSvc::new(
+    //     chip,
+    //     dummysvc_binary,
+    //     &_dsvcram_start as *const u8 as *mut u8,
+    //     &_dsvcram_end as *const u8 as usize - &_dsvcram_start as *const u8 as usize,
+    // )
+    // .unwrap();
+
+    // let res = dummysvc.invoke_service(0x200a00ea as *const fn(), 1, 2, 0, 0, 0, 0, 0, 0);
+
     debug!("OpenTitan initialisation complete. Entering main loop");
 
     (board_kernel, earlgrey, chip, peripherals)

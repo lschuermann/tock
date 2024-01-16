@@ -21,6 +21,7 @@ capsules-core = { path = "../../../capsules/core" }
 capsules-extra = { path = "../../../capsules/extra" }
 capsules-aes-gcm = { path = "../../../capsules/aes_gcm" }
 
+encapfn = { path = "../../../capsules/foreign/encapfn" }
 
 [features]
 default = ["fpga_cw310"]

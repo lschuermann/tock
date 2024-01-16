@@ -1,21 +1,22 @@
-/* Licensed under the Apache License, Version 2.0 or the MIT License. */
-/* SPDX-License-Identifier: Apache-2.0 OR MIT                         */
-/* Copyright Tock Contributors 2023.                                  */
-
 MEMORY
 {
-  rom   (rx)  : ORIGIN = 0x20000000, LENGTH = 0x30000
+  rom   (rx)  : ORIGIN = 0x20000000, LENGTH = 0x50000
   /* Support up to 0x2009_0000 for apps
    * and 0x2009_0000 to 0x2010_0000 is for flash storage.
    */
-  prog  (rx)  : ORIGIN = 0x20030000, LENGTH = 0x60000
-  fs (r)      : ORIGIN = 0x20090000, LENGTH = 0x70000
+  prog  (rx)  : ORIGIN = 0x20050000, LENGTH = 0x40000
+  /* Explicitly define the flash storage region such that we can
+   * export the full flash address space through symbols.
+   * (fs = FlashStorage)
+   */
+  fs    (r)   : ORIGIN = 0x20090000, LENGTH = 0x70000
+  
   /* The first 0x650 bytes of RAM are reserved for the boot
    * ROM, so we have to ignore that space.
    * See https://github.com/lowRISC/opentitan/blob/master/sw/device/silicon_creator/lib/base/static_critical.ld
    * for details
    */
-  ram   (!rx) : ORIGIN = 0x10000650, LENGTH = 0x20000 - 0x650
+  ram   (!rx) : ORIGIN = 0x10000650, LENGTH = 0x10000 - 0x650
 }
 
 SECTIONS {
@@ -52,15 +53,22 @@ SECTIONS {
         . += 8;   /* timestamp */
         . += 32;  /* binding_value */
         . += 4;   /* max_key_version */
+        /* TODO initial value ? */
         . += 4;   /* code_start */
+        /* TODO initial value ? */
         . += 4;   /* code_end */
-        LONG(_stext - ORIGIN(rom)); /* . = . + 4; entry_point */
+        LONG(_stext - ORIGIN(rom)); /* entry_point */
         /* manifest extension table */
         /* see: sw/device/silicon_creator/lib/base/chip.h */
-        /* CHIP_MANIFEST_EXT_TABLE_COUNT = 15 */
+        /* CHIP_MANIFEST_EXT_TABLE_COUNT = 16 */
         /* sizeof(manifest_ext_table_entry) = 8 */
-        . += 120; /* manifest_ext_table */
+        . += 128; /* manifest_ext_table */
     } > rom
+
+    .vectors : ALIGN (256) {
+      KEEP(*(.riscv.open_titan_trap_vectored));
+    } > rom
+
 }
 ASSERT (((_etext - _manifest) > 0), "Error: PMP and Flash protection setup assumes _etext follows _manifest");
 INCLUDE ../../kernel_layout.ld
