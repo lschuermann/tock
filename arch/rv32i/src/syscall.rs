@@ -458,7 +458,7 @@ impl kernel::syscall::UserspaceKernelBoundary for SysCall {
           lw   t0, 1*4(sp)
           sw   t0, 18*4(s3)
 
-          // We also need to store the app stack pointer, mcause, and mepc:
+          // We also need to store a few CSRs:
           //
           // We store mepc persistently because it is where we need to return to
           // the app at some point.
