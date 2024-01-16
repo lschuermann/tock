@@ -16,5 +16,8 @@ kernel = { path = "../../../kernel" }
 nrf52840 = { path = "../../../chips/nrf52840" }
 nrf52_components = { path = "../nrf52_components" }
 
+encapfn = { path = "../../../capsules/foreign/encapfn" }
+dummy-wrapper = { path = "../../../capsules/foreign/dummy/wrapper" }
+
 capsules-core = { path = "../../../capsules/core" }
 capsules-extra = { path = "../../../capsules/extra" }
