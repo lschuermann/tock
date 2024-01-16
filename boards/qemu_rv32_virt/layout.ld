@@ -14,7 +14,8 @@ MEMORY
 {
   rom (rx)  : ORIGIN = 0x80000000, LENGTH = 0x100000
   prog (rx) : ORIGIN = 0x80100000, LENGTH = 0x100000
-  ram (rwx) : ORIGIN = 0x80200000, LENGTH = 0x200000
+  ram (rwx) : ORIGIN = 0x80200000, LENGTH = 0x100000
+  dsvcram (rwx) : ORIGIN = 0x80300000, LENGTH = 0x100000
 }
 
 SECTIONS {
@@ -31,3 +32,6 @@ SECTIONS {
 }
 
 INCLUDE ../kernel_layout.ld
+
+_dsvcram_start = ORIGIN(dsvcram);
+_dsvcram_end = ORIGIN(dsvcram) + LENGTH(dsvcram);
