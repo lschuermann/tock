@@ -1,0 +1,13 @@
+[package]
+name = "encapfn"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[features]
+mock-rt = [ ]
+
+[dependencies]
+kernel = { path = "../../../kernel" }
+tock-tbf = { path = "../../../libraries/tock-tbf" }
+cortexm = { path = "../../../arch/cortex-m" }
