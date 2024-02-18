@@ -399,20 +399,20 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
             // will issue arbitrary memory accesses (acting as a compiler
             // fence).
             asm!("
-                // Before switching to the service we need to save some kernel
+                // Before switching to the function we need to save some kernel
                 // registers to the kernel stack, specifically ones which we can't
                 // mark as clobbered in the asm!() block. We set up the stack such
                 // that the `_start_trap` handler will invoke our context-specific
-                // trap handler by jumping to `_service_trap_continue` below in this
+                // trap handler by jumping to `_function_trap_continue` below in this
                 // block. Finally, activate this trap handler by storing the stack
                 // pointer in the `mscratch` CSR.
                 //
                 // It may happen that the trap handler is invoked because of an
                 // interrupt, in which case we'll have to save all caller-saved
-                // registers of the service's register file. To avoid the risk of
+                // registers of the function's register file. To avoid the risk of
                 // nested trap handlers while saving this register file (and
                 // a nested trap handler then clobbering our CSRs), we pre-allocate
-                // space for those registers before even scheduling the service.
+                // space for those registers before even scheduling the function.
                 //
                 // Here is a memory map of our intended stack layout, to make it
                 // easier to keep track:
@@ -439,7 +439,7 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 // 10*4(sp): x3 (gp)
                 //  9*4(sp): x2 (sp)
                 //  8*4(sp): x1 (ra)
-                //  7*4(sp): pc (from mepc, saved in s3)
+                //  7*4(sp): pc (from mepc, saved in s3) // TODO: remove maybe?
                 //
                 // ^-^-^-^-^-^ pre-allocated caller-saved registers ^-^-^-^-^-^-^-^-^-
                 //
@@ -447,12 +447,12 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 //  5*4(sp): x8 (fp)
                 //  4*4(sp): x4 (tp)
                 //  3*4(sp): x3 (gp)
-                //  2*4(sp): previous (kernel-mode) mscratch trap handler address
+                //  2*4(sp): // TODO remove
                 //
                 // v-v-v-v-v-v mandated stack layout by `_start_trap` v-v-v-v-v-v-v-v-
                 //
-                //  1*4(sp): scratch word (written with `s3` in `_start_trap`)
-                //  0*4(sp): _service_trap_continue (100) (address to jump to on trap)
+                //  1*4(sp): // TODO remove
+                //  0*4(sp): // temporary scratch space for the function's stack pointer
                 // ```
                 //
                 // We make sure that the new stack pointer is 16 byte aligned, as per
@@ -468,7 +468,10 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 sw   x8,  5*4(sp)   // fp (can't be clobbered / used as an operand)
                 sw   x4,  4*4(sp)   // tp (can't be clobbered / used as an operand)
                 sw   x3,  3*4(sp)   // gp (can't be clobbered / used as an operand)
-                //   x2             // sp -> saved in mscratch CSR below
+                //   x2             // sp -> saved in KERNEL_STACK_POINTER below
+
+                la t0, {kernel_stack_ptr_sym} // Addr of KERNEL_STACK_POINTER
+                sw sp, 0*4(t0)                // Save current stack pointer
 
                 // From here on we can't allow the CPU to take interrupts anymore,
                 // as it would schedule our trap handler with an inconsistent
@@ -486,7 +489,7 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
 
                 // Afterwards, if interrupts were enabled in machine mode
                 // previously, re-enable them on the context switch into the
-                // service:
+                // function:
                 //
                 //   0x00000008
                 // & 0xXXXXXXX?
@@ -499,57 +502,39 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 // compressed instructions for `li` as the immediate is small
                 // enough.
 
-                li    t5, 0x00000008
-                and   t5, t5, t4       // only set bit 7 if MIE was set
-                slli  t5, t5, 4        // move bit 3 to bit 7 in t4
-                csrrs x0, mstatus, t5  // set bits in mstatus, don't care about read
+                li    t0, 0x00000008
+                and   t0, t0, t4       // only set bit 7 if MIE was set
+                slli  t0, t0, 4        // move bit 3 to bit 7 in t4
+                csrrs x0, mstatus, t0  // set bits in mstatus, don't care about read
 
-                // Indicate that the trap handler should jump to the
-                // `_service_trap_continue` on a trap.
-                //
-                // In asm!() we can't use the shorthand `li` pseudo-instruction, as it
-                // complains about _app_trap_continue (100) not being a constant in
-                // the required range.
-                lui  t5, %hi(200f)
-                addi t5, t5, %lo(200f)
-                sw   t5, 0*4(sp)
+                // Switch the trap handler to _function_return_to_kernel
+                la t0, 200f
+                csrw mscratch, t0
 
-                // Swap out the (kernel-mode) dynamic dispatch trap-handler stack
-                // for our current `sp`. This will point the `_start_trap` handler to
-                // the `_app_trap_continue` symbol for handling traps arriving while
-                // in userspace.
-                //
-                // We further save the kernel-mode trap handler stack pointer on our
-                // current stack, to restore it when we're switching back into kernel
-                // mode.
-                csrrw t5, mscratch, sp
-                sw    t5, 2*4(sp)
-
-                // We have to set the mepc CSR with the PC we want the service to start
+                // We have to set the mepc CSR with the PC we want the function to start
                 // executing at:
                 csrw mepc, s2
 
-                // Set the return address to point to _service_return_to_kernel. This
+                // Set the return address to point to _function_return_to_kernel. This
                 // is an `ecall` instruction, which will either execute (when not
                 // enforcing memory protection) and subsequenty jump to the trap
                 // handler, or will cause an Instruction Access Fault and thus also
                 // cause the trap handler to execute:
-                lui  ra, %hi(100f)
-                addi ra, ra, %lo(100f)
+                la ra, 100f
 
                 // The function call arguments are already loaded into registers
                 // a0 -- a7 by the inline asm!() block.
 
-                // Load the service stack pointer:
-                mv   sp, s3
+                // Load the function stack pointer:
+                mv sp, s3
 
                 // Call mret to jump to where mepc points, switch to user mode, and
-                // start running the service.
+                // start running the function.
                 mret
 
                 // The following instruction should NEVER be executed on systems which
-                // have proper memory protection for containerized services. This
-                // address is set as the return address for the executed service
+                // have proper memory protection for containerized functions. This
+                // address is set as the return address for the executed function
                 // routine. We expect the application attempting to jump to this
                 // address to trigger an Instruction Access Fault. The Rust function
                 // surrounding this asm!() block can then inspect mcause and mtval
@@ -558,194 +543,194 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 //
                 // While we could theoretically use any inaccessible address for this,
                 // we specifically point to this `ecall` instruction to also support
-                // services running without memory isolation, for instance during
+                // functions running without memory isolation, for instance during
                 // development:
-              100: // _service_return_to_kernel
+              100: // _function_return_to_kernel
                 ecall
 
-                // This is where the trap handler jumps back to after the service
+                // This is where the trap handler jumps back to after the function
                 // stops executing. We will still be in the trap handler context, and
                 // have to switch back to kernel mode using `mret` accordingly.
-              200: // _service_trap_continue
+              200: // _start_function_trap
 
                 // At this point all we know is that we entered the trap handler
-                // from the service. We don't know _why_ we got a trap, it could be
+                // from the function. We don't know _why_ we got a trap, it could be
                 // from an interrupt, syscall, or fault (or maybe something else).
                 // Therefore we have to be very careful not to overwrite any
                 // registers before we determined the strategy to handle this trap:
                 //
                 // - In the case of an interrupt, we want to disable it and return
-                //   to the service with an unmodified register file.
+                //   to the function with an unmodified register file.
                 //
                 // - In the case of an instruction access fault at address 0x0,
-                //   we assume that the service has finished executing. We want
+                //   we assume that the function has finished executing. We want
                 //   to return to the kernel stack and process the return value.
                 //
                 // - For any other trap, return to the kernel and interpret this as a
-                //   service fault. We need to re-initialize the server to bring it
+                //   function fault. We need to re-initialize the server to bring it
                 //   into a consistent state again.
                 //
                 // We arrive at this userspace-specific trap handler through a
-                // dispatch by the generic `_start_trap` handler. The generic
+                // dispatch by the global `_start_trap` handler. The generic
                 // handler has made the following modifications to the register
                 // file:
                 //
-                // - `s2` now points to our current stack frame, as previously
-                //   saved to the `mscratch` CSR. The `mscratch` CSR contains the
-                //   app's `s2` register value.
-                //
-                // - the `s3` register is clobbered, its original value stored at
-                //   `1*4(s2)`.
+                // - the function's t0 has been swapped into mscratch. We're
+                //   free to clobber t0, as the address of _start_function_trap
+                //   (prior value of mscratch is well known to us).
 
                 // Load the mcause CSR to determine why the app stopped executing:
-                csrr s3, mcause
+                csrr t0, mcause
 
                 // Check if this was an interrupt, and if it was, then we need to
                 // disable the interrupt before returning from this trap handler so
                 // that it does not fire again. If mcause is greater than or equal
                 // to zero this was not an interrupt (i.e. the most significant bit
                 // is not 1).
-                bge  s3, zero, 300f // jump to _service_trap_continue_fault
+                bge  t0, zero, 300f // jump to _function_trap_continue_fault
 
                 // This was an interrupt. We need to invoke a kernel-function to
                 // disable interrupts. While this is possible from within the trap
-                // handler context, we still need to preserve the service register
+                // handler context, we still need to preserve the function register
                 // file. Furthermore, this function may perform allocations on the
                 // kernel stack, which may overrun it. Thus, to prevent this trap
                 // handler from being scheduled because of a kernel stack overflow, we
                 // need to swap out the trap handler again.
 
+                // First, restore the kernel stack pointer. We still need access
+                // to mcause later on, but reading from a CSR is cheap. Thus
+                // overwrite t0:
+                la t0, {kernel_stack_ptr_addr}
+                lw t0, 0*4(t0)
+
                 // First, save all caller-saved registers (and a few others which we
                 // don't want to leak from C to Rust, such as gp and tp) into the
                 // pre-allocated regions on the stack. This should not be able to
                 // cause a trap:
-                sw   x31, 26*4(s2)
-                sw   x30, 25*4(s2)
-                sw   x29, 24*4(s2)
-                sw   x28, 23*4(s2)
-                sw   x17, 22*4(s2)
-                sw   x16, 21*4(s2)
-                sw   x15, 20*4(s2)
-                sw   x14, 19*4(s2)
-                sw   x13, 18*4(s2)
-                sw   x12, 17*4(s2)
-                sw   x11, 16*4(s2)
-                sw   x10, 15*4(s2)
-                sw    x7, 14*4(s2)
-                sw    x6, 13*4(s2)
-                sw    x5, 12*4(s2)
-                sw    x4, 11*4(s2)
-                sw    x3, 10*4(s2)
-                sw    x2,  9*4(s2)
-                sw    x1,  8*4(s2)
+                sw   x31, 26*4(t0) // t6
+                sw   x30, 25*4(t0) // t5
+                sw   x29, 24*4(t0) // t4
+                sw   x28, 23*4(t0) // t3
+                sw   x17, 22*4(t0) // a7
+                sw   x16, 21*4(t0) // a6
+                sw   x15, 20*4(t0) // a5
+                sw   x14, 19*4(t0) // a4
+                sw   x13, 18*4(t0) // a3
+                sw   x12, 17*4(t0) // a2
+                sw   x11, 16*4(t0) // a1
+                sw   x10, 15*4(t0) // a0
+                sw    x7, 14*4(t0) // t2
+                sw    x6, 13*4(t0) // t1
+                // -- x5  12*4(t0) -> t0, currently in mscratch, stored below
+                sw    x4, 11*4(t0) // tp
+                sw    x3, 10*4(t0) // gp
+                sw    x2,  9*4(t0) // sp
+                sw    x1,  8*4(t0) // ra
 
-                // We saved the service's stack pointer (sp), so load our proper stack
-                // pointer (currently in s2) into that register:
-                mv    sp, s2
+                // We saved the function's sp, restore the kernel stack pointer
+                // into that register:
+                mv sp, t0
 
-                // With these registers saved, we can clobber one to extract the
-                // service's `pc` register from the mepc CSR and save that as well.
-                // This CSR may be overwritten in the kernel-mode trap handler.
-                csrr t0, mepc    // TODO: use a saved register instead of t0
-                sw   t0, 7*4(sp)
+                // Before we switch to the Rust function to disable interrupts, we
+                // want to restore the kernel trap handler. This will ensure that
+                // we still properly panic on a trap caused by this function.
+                //
+                // For this, clear mscratch and store the function's t0. We don't
+                // clobber t0, as that contains mcause and is needed below:
+                csrrw t1, mscratch, zero
+                sw t1, 12*4(sp) // t0
 
-                // All registers saved in their pre-allocated caller-saved register slots!
-
-                // Then, swap the kernel dynamic-dispatch trap handler stack back into
-                // mscratch. This provides us with the service's `s2`, which we retain
-                // in that register:
-                lw   t0, 2*4(sp)
-                csrrw s2, mscratch, t0
-
-                // Load the previously extracted mcause into `a0`, passing that as an
-                // argument to disable interrupts from within Rust:
-                mv   a0, s3
+                // All registers saved in their pre-allocated caller-saved
+                // register slots!
+                //
+                // Load mcause into `a0`, passing that as an argument to disable
+                // interrupts from within Rust. Because we're operating from
+                // within an interrupt trap handler context, we assume that all
+                // other traps within this function are faults and result in a
+                // panic. Hence we should never return here with a clobbered
+                // mepc CSR.
+                csrr a0, mscratch
                 jal  ra, _disable_interrupt_trap_rust_from_app
 
                 // With interrupts disabled, we can exit the trap handler and return
-                // to the service. For this, restore the application context:
-                lw   x31, 26*4(sp)
-                lw   x30, 25*4(sp)
-                lw   x29, 24*4(sp)
-                lw   x28, 23*4(sp)
-                lw   x17, 22*4(sp)
-                lw   x16, 21*4(sp)
-                lw   x15, 20*4(sp)
-                lw   x14, 19*4(sp)
-                lw   x13, 18*4(sp)
-                lw   x12, 17*4(sp)
-                lw   x11, 16*4(sp)
-                lw   x10, 15*4(sp)
-                lw    x7, 14*4(sp)
-                lw    x6, 13*4(sp)
-                lw    x5, 12*4(sp)
-                lw    x4, 11*4(sp)
-                lw    x3, 10*4(sp)
-                                   // don't overwrite sp / x2 just yet
-                lw    x1,  8*4(sp)
+                // to the function. For this, restore the application context:
+                lw   x31, 26*4(sp) // t6
+                lw   x30, 25*4(sp) // t5
+                lw   x29, 24*4(sp) // t4
+                lw   x28, 23*4(sp) // t3
+                lw   x17, 22*4(sp) // a7
+                lw   x16, 21*4(sp) // a6
+                lw   x15, 20*4(sp) // a5
+                lw   x14, 19*4(sp) // a4
+                lw   x13, 18*4(sp) // a3
+                lw   x12, 17*4(sp) // a2
+                lw   x11, 16*4(sp) // a1
+                lw   x10, 15*4(sp) // a0
+                lw    x7, 14*4(sp) // t2
+                lw    x6, 13*4(sp) // t1
+                lw -- x5  12*4(sp) -> t0, restored below
+                lw    x4, 11*4(sp) // tp
+                lw    x3, 10*4(sp) // gp
+                // -- x2 - 9*4(sp) -> sp, restored below
+                lw    x1,  8*4(sp) // ra
 
-                // Load the service PC from its stored offset into mepc, which we will
-                // jump to on `mret`:
-                lw    s3,  7*4(sp)
-                csrw  mepc, s3
+                // Restore our trap handler:
+                la t0, {kernel_stack_ptr_addr}
+                csrw mscratch, t0
 
-                // Re-insert our stack pointer (sp) into the mscratch CSR, swapping
-                // out the kernel one. We re-save the mscratch value, as it
-                // potentially have changed.
-                csrrw s3, mscratch, sp
-                sw    s3, 2*4(sp)
+                // Load the function's t0:
+                lw t0, 12*4(sp)
 
-                // Load the original s3 from the offset it was placed in by the
-                // `_start_trap` handler:
-                lw    s3,  1*4(sp)
+                // Load the function's stack pointer. Do this last, as we
+                // overwite our pointer We don't need to re-save the kernel
+                // stack pointer, it is unchanged:
+                lw sp, 9*4(sp)
 
-                // Finally, replace our stack pointer (sp) by the original value of
-                // the `sp` / `x2` register, as saved on the stack:
-                lw    sp, 9*4(sp)
-
-                // Return to the service:
+                // Return to the function:
                 mret
 
-              300: // _service_trap_continue_fault
+              300: // _function_trap_continue_fault
 
                 // A non-interrupt fault occured. Switch back to the kernel. By
                 // retaining mcause and mtval in registers, we allow the surrounding
                 // Rust function to interpret this fault as either a function return
                 // or a proper fault, in response to which we need to return an error
-                // and reinitialize the service.
+                // and reinitialize the function.
 
-                // Restore the original kernel dynamic-dispatch trap handler
-                // stack into the mscratch CSR. The `_start_trap` handler has
-                // loaded the service's `s2` into mscratch register, but we can
-                // safely discard its value at this point:
-                lw   s3, 2*4(s2)
-                csrw mscratch, s3
+                // When we arrive here, we have the function's t0 in the
+                // mscratch CSR, and the value of mcause in t0.
+                //
+                // Keep mcause in t0, as we need it in the surrounding Rust
+                // function.
 
-                // Switch back to the kernel stack and store the service stack pointer
-                // in s3:
-                mv   s3, sp
-                mv   sp, s2
+                // Restore the kernel trap handler. We aren't interested in the
+                // app's t0, which is currently stored there.
+                csrw mscratch, zero
 
                 // To continue executing this assembly block after returning from the
-                // trap handler, load _service_return_to_kernel into mepc, and
-                // retaining the app's previous PC in `s2`.
-                lui  s2, %hi(400f)
-                addi s2, s2, %lo(400f)
-                csrrw s2, mepc, s2
+                // trap handler, load _function_return_to_kernel into mepc, and
+                // retaining the app's previous PC in `t1`:
+                la t1, 400f
+                csrrw t1, mepc, t1
+
+                // Switch back to the kernel stack while retaining the
+                // function's stack pointer in t2:
+                mv t2, sp                         // Store the function's sp in t1
+                la sp, {kernel_stack_ptr_addr}    // Load addr of KERNEL_STACK_POINTER
+                lw sp, 0*4(sp)                    // Load the kernel stack pointer
 
                 // Extract a few required CSRs:
-                csrr s4, mcause
-                csrr s5, mtval
+                csrr t3, mtval
 
                 // Need to set mstatus.MPP to 0b11 so that we stay in machine mode.
-                li   t0, 0x1800   // Load 0b11 to the MPP bits location in t1
-                csrrs x0, mstatus, t0
+                li   t4, 0x1800   // Load 0b11 to the MPP bits location in t1
+                csrs mstatus, t0  // mstatus |= 0x00001800
 
                 // Use mret to exit the trap handler and return to the context
                 // switching code.
                 mret
 
-              400: // _service_return_to_kernel
+              400: // _function_return_to_kernel
 
                 // Restore the kernel registers before resuming kernel code.
                 lw   x9,  6*4(sp)  // s1 (used internally by LLVM)
@@ -754,15 +739,16 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 lw   x3,  3*4(sp)  // gp (can't be clobbered / used as an operand)
                 //   x2            // sp -> loaded from mscratch by the trap handler
 
-                // Load the local _service_return_to_kernel address into a
+                // Load the local _function_return_to_kernel address into a
                 // register for comparison with mtval. If those are identical,
-                // and mcause indicates an Instruction Access Fault, the service
+                // and mcause indicates an Instruction Access Fault, the function
                 // attempted to return to the kernel.
-                lui  s6, %hi(100b)
-                addi s6, s6, %lo(100b)
+                la t4, 100b
 
                 addi sp, sp, 28*4   // Reset kernel stack pointer
             ",
+
+		sym kernel_stack_ptr_addr = core::mem::addr_of!(rv32i::syscall::KERNEL_STACK_PTR),
 
                 // Function argument registers.
                 //
@@ -779,47 +765,38 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
                 in("x16") a6, lateout("x16") _,
                 in("x17") a7, lateout("x17") _,
 
-                // `service_pc` / `s2` carries the desired function pointer to switch
+                // `function_pc` / `t1` carries the desired function pointer to switch
                 // to, and will contain the `mepc` PC register value when the function
                 // has stopped executing due to a fault / return. Inspect this value
                 // to interpret an Instruction Access Violation as a "syscall":
-                inout("x18") service_pc,   // s2
+                inout("x6") function_pc,   // t1
 
-                // The service's stack pointer (`service_sp`). After function
-                // execution, the service's SP register will further be provided in
+                // The function's stack pointer (`function_sp`). After function
+                // execution, the function's SP register will further be provided in
                 // this register:
-                inout("x19") service_sp,   // s3
+                inout("x7") function_sp,   // t2
 
                 // Trap handler's `mcause` and `mtval` CSR, captured in the trap
-                // handler switching back from service to kernel:
-                out("x20") service_mcause, // s4
-                out("x21") service_mtval,  // s5
+                // handler switching back from function to kernel:
+                out("x5") function_mcause, // t0
+                out("x28") function_mtval,  // t3
 
                 // Reference-address for the app return address. If we get an
                 // instruction access fault (mcause = 1) with an mepc equal to
                 // this address, interpret this as an attempted "return to
                 // kernel" / syscall. Otherwise, handle it as a fault.
-                out("x22") return_to_kernel_addr, // s6
+                out("x29") return_to_kernel_addr, // t4
 
                 // Clobber all registers (except those marked as inputs or outputs
-                // above, or ones we can't clobber). We don't trust the service to
+                // above, or ones we can't clobber). We don't trust the function to
                 // respect the RISC-V ABI, so this includes callee-saved registers:
-                out("x1") _,  out("x5") _, out("x6") _, out("x7") _,
-                out("x23") _, out("x24") _, out("x25") _, out("x26") _,
-                out("x27") _, out("x28") _, out("x29") _, out("x30") _,
-                out("x31") _,
-
-                // Thus, we arrive at the follwing clobbered / non-clobbered
-                // & saved registers:
-                //
-                //  x0: N/A   x1: CLB   x2: SVD   x3: SVD
-                //  x4: SVD   x5: CLB   x6: CLB   x7: CLB
-                //  x8: SVD   x9: SVD  x10: CLB  x11: CLB
-                // x12: CLB  x13: CLB  x14: CLB  x15: CLB
-                // x16: CLB  x17: CLB  x18: CLB  x19: CLB
-                // x20: CLB  x21: CLB  x22: CLB  x23: CLB
-                // x24: CLB  x25: CLB  x26: CLB  x27: CLB
-                // x28: CLB  x29: CLB  x30: CLB  x31: CLB
+                out("x1") _ /*   ra */, out("x18") _ /*  s2 */,
+	        out("x19") _ /*  s3 */, out("x20") _ /*  s4 */,
+	        out("x21") _ /*  s5 */, out("x22") _ /*  s6 */,
+	        out("x23") _ /*  s7 */, out("x24") _ /*  s8 */,
+	        out("x25") _ /*  s9 */, out("x26") _ /* s10 */,
+	        out("x27") _ /* s11 */, out("x30") _ /*  t5 */,
+                out("x31") _ /*  t6 */,
             );
         }
 
@@ -847,21 +824,21 @@ impl<'m, ID: EFID, M: MPU> EncapfnRt for EncapfnTockRv32iCRt<'m, ID, M> {
         // Check whether we returned from the service because it voluntarily
         // ceased control (e.g. `ecall` INSN or Instruction Access Fault when
         // trying to jump to `ecall`), or whether it faulted:
-        if service_mcause == 8 || (service_mcause == 1 && service_mtval == return_to_kernel_addr) {
-            // The service voluntarily ceased control by returning to the
+        if function_mcause == 8 || (function_mcause == 1 && function_mtval == return_to_kernel_addr) {
+            // The function voluntarily ceased control by returning to the
             // address specified in `ra`.
             Ok((a0, a1))
         } else {
-            // The service faulted. TODO: do something sensible instead of
+            // The function faulted. TODO: do something sensible instead of
             // panicing.
             panic!(
-                "Service faulted! a0: {:08x}, pc: {:p}, sp: {:p}, mcause: \
+                "Function faulted! a0: {:08x}, pc: {:p}, sp: {:p}, mcause: \
                  {:08x}, mtval: {:08x}, rettokern: {:08x}, PMPConfig: {}",
                 a0,
-                service_pc as *const u8,
-                service_sp as *const u8,
-                service_mcause,
-                service_mtval,
+                function_pc as *const u8,
+                function_sp as *const u8,
+                function_mcause,
+                function_mtval,
                 return_to_kernel_addr,
                 self.mpu_config
             );
