@@ -1,0 +1,14 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2022.
+
+[package]
+name = "nrf52840dk_2"
+version.workspace = true
+authors.workspace = true
+build = "../../build.rs"
+edition.workspace = true
+
+[dependencies]
+kernel = { path = "../../../kernel" }
+nrf52840dk = { path = "../nrf52840dk" }
