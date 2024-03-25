@@ -58,7 +58,7 @@
 //! some_capsule.register();
 //! ```
 
-use crate::threadlocal::{ThreadLocal, ThreadLocalDyn};
+use crate::threadlocal::ThreadLocal;
 use core::marker::Copy;
 use core::marker::PhantomData;
 
@@ -108,13 +108,6 @@ impl DynDefCallRef<'_> {
     }
 }
 
-pub const DEFAULT_DEFERRED_CALL_STATE: ThreadLocalDeferredCallState =
-    ThreadLocalDeferredCallState {
-        ctr: 0,
-        bitmask: 0,
-        defcalls: [None; 32],
-    };
-
 #[derive(Copy, Clone)]
 pub struct ThreadLocalDeferredCallState {
     /// Counter for the number of deferred calls that have been created, this is
@@ -131,24 +124,18 @@ pub struct ThreadLocalDeferredCallState {
     defcalls: [Option<DynDefCallRef<'static>>; 32],
 }
 
-static DEFAULT_DEFCALL_STATE: ThreadLocal<0, ThreadLocalDeferredCallState> = ThreadLocal::new([]);
-static mut DEFCALL_STATE: &'static dyn ThreadLocalDyn<ThreadLocalDeferredCallState> =
-    &DEFAULT_DEFCALL_STATE;
+pub const DEFAULT_DEFERRED_CALL_STATE: ThreadLocalDeferredCallState =
+    ThreadLocalDeferredCallState {
+        ctr: 0,
+        bitmask: 0,
+        defcalls: [None; 32],
+    };
 
-pub unsafe fn initialize_global_deferred_call_state(
-    state: &'static dyn ThreadLocalDyn<ThreadLocalDeferredCallState>,
-) {
-    *core::ptr::addr_of_mut!(DEFCALL_STATE) = state;
-}
+static DEFCALL_STATE: ThreadLocal<ThreadLocalDeferredCallState> =
+    ThreadLocal::init(DEFAULT_DEFERRED_CALL_STATE);
 
-unsafe fn with_defcall_state_panic<R, F: FnOnce(&mut ThreadLocalDeferredCallState) -> R>(
-    f: F,
-) -> R {
-    let threadlocal: &dyn ThreadLocalDyn<_> = *core::ptr::addr_of!(DEFCALL_STATE);
-    threadlocal
-        .get_mut()
-        .expect("Current thread does not have access to a ThreadLocalDeferredCallState")
-        .enter_nonreentrant(f)
+unsafe fn with_defcall_state<R, F: FnOnce(&mut ThreadLocalDeferredCallState) -> R>(f: F) -> R {
+    DEFCALL_STATE.get_mut().enter_nonreentrant(f)
 }
 
 pub struct DeferredCall {
@@ -169,7 +156,7 @@ impl DeferredCall {
         // only after `DEFCALL_STATE` has been initialized, either in the static
         // initialization above, or in the early board initialization of the
         // board.
-        let idx = unsafe { with_defcall_state_panic(closure) };
+        let idx = unsafe { with_defcall_state(closure) };
 
         DeferredCall { idx }
     }
@@ -196,7 +183,7 @@ impl DeferredCall {
         // only after `DEFCALL_STATE` has been initialized, either in the static
         // initialization above, or in the early board initialization of the
         // board.
-        unsafe { with_defcall_state_panic(closure) };
+        unsafe { with_defcall_state(closure) };
     }
 
     /// This function registers the passed client with this deferred call, such
@@ -218,7 +205,7 @@ impl DeferredCall {
         // only after `DEFCALL_STATE` has been initialized, either in the static
         // initialization above, or in the early board initialization of the
         // board.
-        unsafe { with_defcall_state_panic(closure) };
+        unsafe { with_defcall_state(closure) };
     }
 
     /// Check if a deferred callback has been set and not yet serviced on this deferred call.
@@ -232,7 +219,7 @@ impl DeferredCall {
         // only after `DEFCALL_STATE` has been initialized, either in the static
         // initialization above, or in the early board initialization of the
         // board.
-        unsafe { with_defcall_state_panic(closure) }
+        unsafe { with_defcall_state(closure) }
     }
 
     /// Services and clears the next pending `DeferredCall`, returns which index
@@ -251,7 +238,7 @@ impl DeferredCall {
         };
 
         // TODO: safety doc!
-        let res = unsafe { with_defcall_state_panic(closure) };
+        let res = unsafe { with_defcall_state(closure) };
 
         res.map(|(dc, bit)| {
             dc.handle_deferred_call();
@@ -269,7 +256,7 @@ impl DeferredCall {
         // only after `DEFCALL_STATE` has been initialized, either in the static
         // initialization above, or in the early board initialization of the
         // board.
-        unsafe { with_defcall_state_panic(closure) }
+        unsafe { with_defcall_state(closure) }
     }
 
     /// This function should be called at the beginning of the kernel loop
@@ -309,7 +296,7 @@ impl DeferredCall {
         // initialization above, or in the early board initialization of the
         // board.
         let (num_deferred_calls, num_registered_calls, num_deferred_call_slots) =
-            unsafe { with_defcall_state_panic(closure) };
+            unsafe { with_defcall_state(closure) };
 
         if num_deferred_calls >= num_deferred_call_slots
             || num_registered_calls != num_deferred_calls

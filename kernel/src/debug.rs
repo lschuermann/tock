@@ -65,7 +65,7 @@ use crate::platform::chip::Chip;
 use crate::process::Process;
 use crate::process::ProcessPrinter;
 use crate::processbuffer::ReadableProcessSlice;
-use crate::threadlocal::{ThreadLocal, ThreadLocalDyn};
+use crate::threadlocal::ThreadLocal;
 use crate::utilities::binary_write::BinaryToWriteWrapper;
 use crate::utilities::cells::NumericCellExt;
 use crate::utilities::cells::{MapCell, TakeCell};
@@ -407,19 +407,17 @@ pub struct DebugWriter {
 
 /// Static variable that holds the kernel's reference to the debug tool. This is
 /// needed so the debug!() macros have a reference to the object to use.
-static mut DEBUG_WRITER: &'static dyn ThreadLocalDyn<DebugWriterWrapper> = &DEBUG_WRITER_NO_THREADS;
-
-// Dummy initialization value, zero-sized.
-static DEBUG_WRITER_NO_THREADS: ThreadLocal<0, DebugWriterWrapper> = ThreadLocal::new([]);
+static DEBUG_WRITER: ThreadLocal<Option<DebugWriterWrapper>> = ThreadLocal::new([None]);
 
 // TODO: document safety
 //
 // must be called before any read-accesses are made.
-pub unsafe fn set_debug_writer_wrappers(
-    debug_writers: &'static dyn ThreadLocalDyn<DebugWriterWrapper>,
-) {
-    let dw = core::ptr::addr_of_mut!(DEBUG_WRITER);
-    *dw = debug_writers;
+pub unsafe fn set_debug_writer_wrapper(debug_writer: DebugWriterWrapper) {
+    DEBUG_WRITER
+        .get_mut()
+        .enter_nonreentrant(move |opt_writer| {
+            *opt_writer = Some(debug_writer);
+        })
 }
 
 // Safety: relies on DEBUG_WRITER being initialized with a valid ThreadLocalDyn,
@@ -432,8 +430,9 @@ pub unsafe fn set_debug_writer_wrappers(
 // Using a closure here prevents leaking the object of a static lifetime and
 // gives clear bounds on the limits of the reentrancy requirement.
 unsafe fn with_debug_writer<R, F: FnOnce(&mut DebugWriterWrapper) -> R>(f: F) -> Option<R> {
-    let threadlocal: &'static dyn ThreadLocalDyn<_> = *core::ptr::addr_of!(DEBUG_WRITER);
-    threadlocal.get_mut().map(move |v| v.enter_nonreentrant(f))
+    DEBUG_WRITER
+        .get_mut()
+        .enter_nonreentrant(move |opt_writer| opt_writer.as_mut().map(f))
 }
 
 unsafe fn with_debug_writer_panic<R, F: FnOnce(&mut DebugWriterWrapper) -> R>(f: F) -> R {
