@@ -4,11 +4,11 @@ Universal Asynchronous Receiver Transmitter (UART)  HIL
 **TRD:** <br/>
 **Working Group:** Kernel<br/>
 **Type:** Documentary<br/>
-**Status:** Draft <br/>
-**Author:** Philip Levis, Leon Schuermann <br/>
+**Status:** Draft<br/>
+**Author:** Philip Levis, Leon Schuermann<br/>
 **Draft-Created:** August 5, 2021<br/>
-**Draft-Modified:** June 5, 2022<br/>
-**Draft-Version:** 5<br/>
+**Draft-Modified:** May 29, 2024<br/>
+**Draft-Version:** 6<br/>
 **Draft-Discuss:** tock-dev@googlegroups.com</br>
 
 Abstract
@@ -135,7 +135,7 @@ pub trait Configuration {
     fn get_parity(&self) -> Parity;
     fn get_stop_bits(&self) -> StopBits;
     fn get_hw_flow_control(&self) -> bool;
-    fn get_configuration(&self) -> Configuration;
+    fn get_configuration(&self) -> Parameters;
 }
 
 pub trait Configure {
