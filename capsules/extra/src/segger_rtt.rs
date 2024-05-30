@@ -299,7 +299,7 @@ impl<'a, A: hil::time::Alarm<'a>> uart::Configure for SeggerRtt<'a, A> {
         Err(ErrorCode::FAIL)
     }
 
-    fn set_flow_control(&self, _on: bool) -> Result<(), ErrorCode> {
+    fn set_hw_flow_control(&self, _on: bool) -> Result<(), ErrorCode> {
         Err(ErrorCode::FAIL)
     }
 }

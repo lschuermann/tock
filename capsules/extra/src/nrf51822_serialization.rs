@@ -287,7 +287,7 @@ impl uart::TransmitClient for Nrf51822Serialization<'_> {
         });
     }
 
-    fn transmitted_word(&self, _rcode: Result<(), ErrorCode>) {}
+    fn transmitted_character(&self, _rcode: Result<(), ErrorCode>) {}
 }
 
 impl uart::ReceiveClient for Nrf51822Serialization<'_> {
@@ -352,5 +352,5 @@ impl uart::ReceiveClient for Nrf51822Serialization<'_> {
         }
     }
 
-    fn received_word(&self, _word: u32, _rcode: Result<(), ErrorCode>, _err: uart::Error) {}
+    fn received_character(&self, _word: u32, _rcode: Result<(), ErrorCode>, _err: uart::Error) {}
 }

@@ -438,7 +438,7 @@ impl<'a> hil::uart::Transmit<'a> for Uart<'a> {
             // an interrupt.
             self.registers
                 .txctrl
-                .write(txctrl::txen::SET + self.get_stop_bits() + txctrl::txcnt.val(1));
+                .write(txctrl::txen::SET + self.get_stop_bits_registers() + txctrl::txcnt.val(1));
 
             // Enable the interrupt so we know when we can keep writing.
             self.enable_tx_interrupt();
@@ -502,7 +502,7 @@ impl<'a> hil::uart::Receive<'a> for Uart<'a> {
         }
     }
 
-    fn receive_abort(&self) -> Result<(), ErrorCode> {
+    fn receive_abort(&self) -> AbortResult {
         if self.rx_status.get() != UARTStateRX::Idle {
             self.registers.rxctrl.write(rxctrl::enable::CLEAR);
             self.disable_rx_interrupt();

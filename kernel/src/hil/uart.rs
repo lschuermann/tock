@@ -83,20 +83,20 @@ impl<T: Configuration + ReceiveClient + TransmitClient> Client for T {}
 
 /// Trait for querying UART configuration
 pub trait Configuration {
-    fn get_baud_rate(&self) -> u32;
-    fn get_width(&self) -> Width;
-    fn get_parity(&self) -> Parity;
-    fn get_stop_bits(&self) -> StopBits;
-    fn get_flow_control(&self) -> bool;
+    fn get_baud_rate(&self) -> Result<u32, ErrorCode>;
+    fn get_width(&self) -> Result<Width, ErrorCode>;
+    fn get_parity(&self) -> Result<Parity, ErrorCode>;
+    fn get_stop_bits(&self) -> Result<StopBits, ErrorCode>;
+    fn get_hw_flow_control(&self) -> Result<bool, ErrorCode>;
     // TODO: TRD has this as Configuration, but this seems to make more sense
-    fn get_configuration(&self) -> Parameters {
-        Parameters {
-            baud_rate: self.get_baud_rate(),
-            width: self.get_width(),
-            parity: self.get_parity(),
-            stop_bits: self.get_stop_bits(),
-            hw_flow_control: self.get_flow_control(),
-        }
+    fn get_configuration(&self) -> Result<Parameters, ErrorCode> {
+        Ok(Parameters {
+            baud_rate: self.get_baud_rate()?,
+            width: self.get_width()?,
+            parity: self.get_parity()?,
+            stop_bits: self.get_stop_bits()?,
+            hw_flow_control: self.get_hw_flow_control()?,
+        })
     }
 }
 
@@ -106,7 +106,7 @@ pub trait Configure {
     fn set_width(&self, width: Width) -> Result<(), ErrorCode>;
     fn set_parity(&self, parity: Parity) -> Result<(), ErrorCode>;
     fn set_stop_bits(&self, stop: StopBits) -> Result<(), ErrorCode>;
-    fn set_flow_control(&self, on: bool) -> Result<(), ErrorCode>;
+    fn set_hw_flow_control(&self, on: bool) -> Result<(), ErrorCode>;
 
     /// Returns Ok(()), or
     /// - OFF: The underlying hardware is currently not available, perhaps

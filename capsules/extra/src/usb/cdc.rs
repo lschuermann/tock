@@ -652,10 +652,39 @@ impl<'a, U: hil::usb::UsbController<'a>, A: 'a + Alarm<'a>> hil::usb::Client<'a>
 }
 
 impl<'a, U: hil::usb::UsbController<'a>, A: 'a + Alarm<'a>> uart::Configure for CdcAcm<'a, U, A> {
-    fn configure(&self, _parameters: uart::Parameters) -> Result<(), ErrorCode> {
-        // Since this is not a real UART, we don't need to consider these
-        // parameters.
-        Ok(())
+    fn configure(&self, params: uart::Parameters) -> Result<(), ErrorCode> {
+	// If we had any checks to perform, we'd need to do so here before
+	// calling any of the methods below. However, because we're not a real
+	// UART and none of these methods actually do anything, there's nothing
+	// for us to check.
+	self.set_baud_rate(params.baud_rate)?;
+
+	Ok(())
+    }
+
+    fn set_baud_rate(&self, baudrate: u32) -> Result<u32, ErrorCode> {
+	// Not a real UART, accept any configuration:
+	Ok(baudrate)
+    }
+
+    fn set_width(&self, _width: uart::Width) -> Result<(), ErrorCode> {
+	// Not a real UART, accept any configuration:
+	Ok(())
+    }
+
+    fn set_parity(&self, _parity: uart::Parity) -> Result<(), ErrorCode> {
+	// Not a real UART, accept any configuration:
+	Ok(())
+    }
+
+    fn set_stop_bits(&self, _stop_bits: uart::StopBits) -> Result<(), ErrorCode> {
+	// Not a real UART, accept any configuration:
+	Ok(())
+    }
+
+    fn set_hw_flow_control(&self, _flow_control: bool) -> Result<(), ErrorCode> {
+	// Not a real UART, accept any configuration:
+	Ok(())
     }
 }
 
@@ -704,12 +733,19 @@ impl<'a, U: hil::usb::UsbController<'a>, A: 'a + Alarm<'a>> uart::Transmit<'a>
         }
     }
 
-    fn transmit_abort(&self) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn transmit_abort(&self) -> uart::AbortResult {
+        if self.tx_buffer.is_some() {
+	    // We are transmitting, and don't support aborting a
+	    // transmission. Inform the caller:
+	    uart::AbortResult::Callback(false)
+	} else {
+	    // No transmission to abort:
+	    uart::AbortResult::NoCallback
+	}
     }
 
-    fn transmit_word(&self, _word: u32) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn transmit_character(&self, _char: u32) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NOSUPPORT)
     }
 }
 
@@ -736,21 +772,23 @@ impl<'a, U: hil::usb::UsbController<'a>, A: 'a + Alarm<'a>> uart::Receive<'a> fo
         }
     }
 
-    fn receive_abort(&self) -> Result<(), ErrorCode> {
-        if self.rx_buffer.is_none() {
-            // If we have nothing pending then aborting is very easy.
-            Ok(())
-        } else {
+    fn receive_abort(&self) -> uart::AbortResult {
+        if self.rx_buffer.is_some() {
             // If we do have a receive pending then we need to start a deferred
             // call to set the callback and return `BUSY`.
             self.deferred_call_pending_abortrx.set(true);
             self.deferred_call.set();
-            Err(ErrorCode::BUSY)
+
+	    // Requested the receive operation to abort, will schedule callback:
+            uart::AbortResult::Callback(true)
+        } else {
+	    // No operation to abort:
+	    uart::AbortResult::NoCallback
         }
     }
 
-    fn receive_word(&self) -> Result<(), ErrorCode> {
-        Err(ErrorCode::FAIL)
+    fn receive_character(&self) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NOSUPPORT)
     }
 }
 

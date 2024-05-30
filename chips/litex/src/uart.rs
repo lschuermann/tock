@@ -292,37 +292,164 @@ impl<'a, R: LiteXSoCRegisterConfiguration> LiteXUart<'a, R> {
                 .map(move |client| client.transmitted_buffer(buffer, len, Ok(())));
         }
     }
+
+    fn check_set_baud_rate(&self, baud_rate: u32, _phy_regs: &StaticRef<LiteXUartPhyRegisters<R>>, system_clock: u32) -> Result<(), ErrorCode> {
+	if system_clock == 0 {
+	    // Can't divide by zero.
+	    Err(ErrorCode::NOSUPPORT)
+	} else if baud_rate == 0 || baud_rate > system_clock {
+	    Err(ErrorCode::INVAL)
+	} else {
+	    Ok(())
+	}
+    }
+
+    fn check_set_width(&self, width: uart::Width) -> Result<(), ErrorCode> {
+	// Only support 8 bits:
+	match width {
+	    uart::Width::Eight => Ok(()),
+	    _ => Err(ErrorCode::NOSUPPORT),
+	}
+
+    }
+
+    fn check_set_parity(&self, parity: uart::Parity) -> Result<(), ErrorCode> {
+	// Don't support parity:
+	match parity {
+	    uart::Parity::None => Ok(()),
+	    _ => Err(ErrorCode::NOSUPPORT),
+	}
+    }
+
+    fn check_set_stop_bits(&self, stop_bits: uart::StopBits) -> Result<(), ErrorCode> {
+	// Only support 1 stop bit:
+	match stop_bits {
+	    uart::StopBits::One => Ok(()),
+	    _ => Err(ErrorCode::NOSUPPORT),
+	}
+    }
+
+    fn check_set_hw_flow_control(&self, hw_flow_control: bool) -> Result<(), ErrorCode> {
+	// Don't support flow control:
+	match hw_flow_control {
+	    false => Ok(()),
+	    true => Err(ErrorCode::NOSUPPORT),
+	}
+    }
+}
+
+impl<R: LiteXSoCRegisterConfiguration> uart::Configuration for LiteXUart<'_, R> {
+    fn get_baud_rate(&self) -> Result<u32, ErrorCode> {
+	// Can only adjust baudrate if we have access to the PHY registers,
+	// which is not always guaranteed:
+	if let Some((ref phy_regs, system_clock)) = self.phy {
+	    let configured_baudrate = (phy_regs.tuning_word.get() as u64).overflowing_mul(system_clock as u64).0.overflowing_div(1_u64 << 32).0 as u32;
+	    Ok(configured_baudrate)
+	} else {
+	    // No access to PHY regs, can't query baudrate.
+	    Err(ErrorCode::NOSUPPORT)
+	}
+    }
+
+    fn get_width(&self) -> Result<uart::Width, ErrorCode> {
+	Ok(uart::Width::Eight)
+    }
+
+    fn get_parity(&self) -> Result<uart::Parity, ErrorCode> {
+	Ok(uart::Parity::None)
+    }
+
+    fn get_stop_bits(&self) -> Result<uart::StopBits, ErrorCode> {
+	Ok(uart::StopBits::One)
+    }
+
+    fn get_hw_flow_control(&self) -> Result<bool, ErrorCode> {
+	Ok(false)
+    }
 }
 
 impl<R: LiteXSoCRegisterConfiguration> uart::Configure for LiteXUart<'_, R> {
     fn configure(&self, params: uart::Parameters) -> Result<(), ErrorCode> {
-        // LiteX UART supports only
-        // - a fixed with of 8 bits
-        // - no parity
-        // - 1 stop bit
-        // - no hardware flow control(?)
-        if let Some((ref phy_regs, system_clock)) = self.phy {
-            if params.width != uart::Width::Eight
-                || params.parity != uart::Parity::None
-                || params.stop_bits != uart::StopBits::One
-                || params.hw_flow_control
-            {
-                Err(ErrorCode::NOSUPPORT)
-            } else if params.baud_rate == 0 || params.baud_rate > system_clock {
-                Err(ErrorCode::INVAL)
-            } else {
-                let tuning_word = if params.baud_rate == system_clock {
-                    u32::MAX
-                } else {
-                    (((params.baud_rate as u64) * (1 << 32)) / (system_clock as u64)) as u32
-                };
-                phy_regs.tuning_word.set(tuning_word);
+	// Can only adjust baudrate if we have access to the PHY registers,
+	// which is not always guaranteed:
+	if let Some((ref phy_regs, system_clock)) = self.phy {
+	    // Unpack the struct here to ensure this code breaks when new fields
+	    // are added:
+	    let uart::Parameters {
+		baud_rate,
+		width,
+		parity,
+		stop_bits,
+		hw_flow_control,
+	    } = params;
 
-                Ok(())
-            }
-        } else {
-            Err(ErrorCode::NOSUPPORT)
-        }
+	    // Perform all checks before proceeding with configuration to ensure
+	    // that this method is atomic:
+	    self.check_set_baud_rate(baud_rate, phy_regs, system_clock)?;
+	    self.check_set_width(width)?;
+	    self.check_set_parity(parity)?;
+	    self.check_set_stop_bits(stop_bits)?;
+	    self.check_set_hw_flow_control(hw_flow_control)?;
+
+	    // When all checks suceed, apply the configuration:
+	    self.set_baud_rate(baud_rate)?;
+	    self.set_width(width)?;
+	    self.set_parity(parity)?;
+	    self.set_stop_bits(stop_bits)?;
+	    self.set_hw_flow_control(hw_flow_control)?;
+
+	    Ok(())
+	} else {
+	    // No access to PHY regs:
+	    Err(ErrorCode::NOSUPPORT)
+	}
+    }
+
+    fn set_baud_rate(&self, baud_rate: u32) -> Result<u32, ErrorCode> {
+	// Can only adjust baudrate if we have access to the PHY registers,
+	// which is not always guaranteed:
+	if let Some((ref phy_regs, system_clock)) = self.phy {
+	    // Sanity check parameters:
+	    self.check_set_baud_rate(baud_rate, phy_regs, system_clock)?;
+
+	    // Parameters are good, determine hardware tuning word:
+	    let tuning_word = if baud_rate == system_clock {
+                u32::MAX
+            } else {
+                (baud_rate as u64).overflowing_mul(1_u64 << 32).0.overflowing_div(system_clock as u64).0 as u32
+            };
+
+	    // Configure the hardware:
+	    phy_regs.tuning_word.set(tuning_word);
+
+	    // Determine the baudrate that was ultimately configured and return:
+	    let configured_baudrate = (tuning_word as u64).overflowing_mul(system_clock as u64).0.overflowing_div(1_u64 << 32).0 as u32;
+
+	    Ok(configured_baudrate)
+	} else {
+	    // No access to PHY regs:
+	    Err(ErrorCode::NOSUPPORT)
+	}
+    }
+
+    fn set_width(&self, width: uart::Width) -> Result<(), ErrorCode> {
+	// Only support 8 bits, so just run check:
+	self.check_set_width(width)
+    }
+
+    fn set_parity(&self, parity: uart::Parity) -> Result<(), ErrorCode> {
+	// Don't support parity, so just run check:
+	self.check_set_parity(parity)
+    }
+
+    fn set_stop_bits(&self, stop_bits: uart::StopBits) -> Result<(), ErrorCode> {
+	// Only support 1 stop bit, so just run check:
+	self.check_set_stop_bits(stop_bits)
+    }
+
+    fn set_hw_flow_control(&self, hw_flow_control: bool) -> Result<(), ErrorCode> {
+	// Don't support flow control, so just run check:
+	self.check_set_hw_flow_control(hw_flow_control)
     }
 }
 
@@ -336,8 +463,10 @@ impl<'a, R: LiteXSoCRegisterConfiguration> uart::Transmit<'a> for LiteXUart<'a, 
         tx_buffer: &'static mut [u8],
         tx_len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8])> {
-        // Make sure the UART is initialized
-        assert!(self.initialized.get());
+	// Make sure the UART is initialized
+	if !self.initialized.get() {
+	    return Err((ErrorCode::OFF, tx_buffer));
+	}
 
         if tx_buffer.len() < tx_len {
             return Err((ErrorCode::SIZE, tx_buffer));
@@ -406,14 +535,16 @@ impl<'a, R: LiteXSoCRegisterConfiguration> uart::Transmit<'a> for LiteXUart<'a, 
         Ok(())
     }
 
-    fn transmit_word(&self, _word: u32) -> Result<(), ErrorCode> {
-        // Make sure the UART is initialized
-        assert!(self.initialized.get());
+    fn transmit_character(&self, _char: u32) -> Result<(), ErrorCode> {
+	// Make sure the UART is initialized
+	if !self.initialized.get() {
+	    return Err(ErrorCode::OFF);
+	}
 
         Err(ErrorCode::FAIL)
     }
 
-    fn transmit_abort(&self) -> Result<(), ErrorCode> {
+    fn transmit_abort(&self) -> uart::AbortResult {
         // Disable TX events
         //
         // A deferred call might still be pending from the started
@@ -421,8 +552,15 @@ impl<'a, R: LiteXSoCRegisterConfiguration> uart::Transmit<'a> for LiteXUart<'a, 
         // `deferred_tx_abort` if `tx_aborted` is set
 
         // Make sure the UART is initialized
-        assert!(self.initialized.get());
+	if !self.initialized.get() {
+	    // If UART is not initialized, there must not be a transmission to
+	    // abort.
+	    return uart::AbortResult::NoCallback
+	}
 
+	// In any case, we don't want TX interrupts to be delivered. Not
+	// disabling these may result in a double-notification and subsequent
+	// panic in the deferred call / interrupt handing code path.
         self.uart_regs.ev().disable_event(EVENT_MANAGER_INDEX_TX);
 
         if self.tx_buffer.is_some() {
@@ -430,9 +568,11 @@ impl<'a, R: LiteXSoCRegisterConfiguration> uart::Transmit<'a> for LiteXUart<'a, 
             self.tx_deferred_call.set(true);
             self.deferred_call.set();
 
-            Err(ErrorCode::BUSY)
+	    // A transmission was aborted, and we will deliver a callback:
+	    uart::AbortResult::Callback(true)
         } else {
-            Ok(())
+	    // No tranmission to abort.
+	    uart::AbortResult::NoCallback
         }
     }
 }
@@ -448,7 +588,10 @@ impl<'a, R: LiteXSoCRegisterConfiguration> uart::Receive<'a> for LiteXUart<'a, R
         rx_len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8])> {
         // Make sure the UART is initialized
-        assert!(self.initialized.get());
+	if !self.initialized.get() {
+	    return Err((ErrorCode::OFF, rx_buffer))
+	}
+
 
         if rx_len > rx_buffer.len() {
             return Err((ErrorCode::SIZE, rx_buffer));
@@ -493,29 +636,39 @@ impl<'a, R: LiteXSoCRegisterConfiguration> uart::Receive<'a> for LiteXUart<'a, R
         Ok(())
     }
 
-    fn receive_word(&self) -> Result<(), ErrorCode> {
+    fn receive_character(&self) -> Result<(), ErrorCode> {
         // Make sure the UART is initialized
-        assert!(self.initialized.get());
+	if !self.initialized.get() {
+	    return Err(ErrorCode::OFF);
+	}
+
         Err(ErrorCode::FAIL)
     }
 
-    fn receive_abort(&self) -> Result<(), ErrorCode> {
+    fn receive_abort(&self) -> uart::AbortResult {
         // Make sure the UART is initialized
-        assert!(self.initialized.get());
+	if !self.initialized.get() {
+	    // When UART is not initialized, there must not be a receive
+	    // operation to abort:
+	    return uart::AbortResult::NoCallback;
+	}
 
-        // Disable RX events
+	// In any case, we don't want RX interrupts to be delivered. Not
+	// disabling these may result in a double-notification and subsequent
+	// panic in the deferred call / interrupt handing code path.
         self.uart_regs.ev().disable_event(EVENT_MANAGER_INDEX_RX);
 
         if self.rx_buffer.is_some() {
-            // Set the UART transmission to aborted and request a deferred
-            // call
+            // Set the UART transmission to aborted and request a deferred call:
             self.rx_aborted.set(true);
             self.rx_deferred_call.set(true);
             self.deferred_call.set();
 
-            Err(ErrorCode::BUSY)
+	    // A callback will be scheduled, and the operation has been aborted:
+	    uart::AbortResult::Callback(true)
         } else {
-            Ok(())
+	    // No operation to abort:
+	    uart::AbortResult::NoCallback
         }
     }
 }
