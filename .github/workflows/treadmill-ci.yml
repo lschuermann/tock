@@ -62,5 +62,16 @@ jobs:
       # applications.
       - name: Install tockloader
         run: |
-          pip3 install tockloader==1.12.0
+          sudo pip3 --break-system-packages install tockloader
+
+      # Build the nRF52840DK kernel and flash it via OpenOCD:
+      - name: Build the nRF52840DK kernel
+        run: |
+          pushd boards/nordic/nrf58240dk
+          make
+          popd
+
+      - name: Flash the nRF58240DK kernel
+        run: |
+          tockloader flash --board nrf52dk --openocd -a 0x0 ./target/thumbv7em-none-eabi/release/nrf52840dk.bin
 
