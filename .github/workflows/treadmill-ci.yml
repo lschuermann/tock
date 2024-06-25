@@ -48,8 +48,8 @@ jobs:
       # Install basic packages required for the GitHub actions workflow
       - name: Update packages and install dependencies
         run: |
-          sudo apt update
-          sudo apt install python3-pip python3-venv
+          sudo DEBIAN_FRONTEND=noninteractive apt update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y python3-pip python3-venv
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
