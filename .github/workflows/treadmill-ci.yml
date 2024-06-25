@@ -45,6 +45,22 @@ jobs:
     runs-on: "tml-ephrun-${{ needs.eval-strategy.outputs.tml-jobid-nrf52840 }}"
 
     steps:
-      - name: List USB devices
+      # Install basic packages required for the GitHub actions workflow
+      - name: Update packages and install dependencies
         run: |
-          lsusb
+          sudo apt update
+          sudo apt install python3-pip python3-venv
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # Install elf2tab to be able to build userspace apps
+      - name: Install elf2tab
+        run: |
+          cargo install elf2tab@0.12.0
+
+      # Install tockloader, which is used to prepare binaries with userspace
+      # applications.
+      - name: Install tockloader
+        run: |
+          pip3 install tockloader==1.12.0
+
