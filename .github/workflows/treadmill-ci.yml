@@ -62,7 +62,7 @@ jobs:
       # applications.
       - name: Install tockloader
         run: |
-          sudo pip3 --break-system-packages install tockloader
+          sudo pip3 install --break-system-packages tockloader
 
       # Build the nRF52840DK kernel and flash it via OpenOCD:
       - name: Build the nRF52840DK kernel
