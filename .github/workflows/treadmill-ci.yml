@@ -1,0 +1,50 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2023.
+
+name: treadmill-ci
+
+on:
+  push:
+
+jobs:
+  eval-strategy:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    # The type of runner that the job will run on
+    runs-on: ${{ matrix.os }}
+
+    outputs:
+      tml-jobid-nrf52840: ${{ steps.launch-jobs.outputs.tml-jobid-nrf52840 }}
+
+    steps:
+      # Checkout the Tock repo, needs to happen at the beginning given
+      # that other steps (such as the Rust toolchain) depend on files
+      # in this repo.
+      - name: Checkout the current repository
+        uses: actions/checkout@v3
+
+      - name: Analyze changes and determine test strategy
+        run: |
+          echo "To implement..."
+
+      - name: Launch Treadmill jobset
+        id: launch-jobs
+        run: |
+          echo "tml-jobid-nrf52840=50734190-4944-44c8-994f-b05781e0898e" >> "$GITHUB_OUTPUT"
+          echo "WARNING: API to launch job is not implemented yet."
+          echo "Launch a job that spawns a GH actions runner with tag"
+          echo "tml-ephrun-50734190-4944-44c8-994f-b05781e0898e to"
+          echo "complete this workflow."
+
+  nrf52840-hw-ci:
+    # Run only on the assigned job:
+    needs: eval-strategy
+    runs-on: "tml-ephrun-${{ needs.eval-strategy.outputs.tml-jobid-nrf52840 }}"
+
+    steps:
+      - name: List USB devices
+        run: |
+          lsusb
