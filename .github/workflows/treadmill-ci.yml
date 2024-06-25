@@ -45,6 +45,9 @@ jobs:
     runs-on: "tml-ephrun-${{ needs.eval-strategy.outputs.tml-jobid-nrf52840 }}"
 
     steps:
+      - name: Checkout the current repository
+        uses: actions/checkout@v3
+
       # Install basic packages required for the GitHub actions workflow
       - name: Update packages and install dependencies
         run: |
