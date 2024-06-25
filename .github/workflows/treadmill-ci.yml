@@ -70,11 +70,14 @@ jobs:
       # Build the nRF52840DK kernel and flash it via OpenOCD:
       - name: Build the nRF52840DK kernel
         run: |
-          pushd boards/nordic/nrf58240dk
+          ls
+          pushd ./tock/boards/nordic/nrf58240dk
           make
           popd
 
       - name: Flash the nRF58240DK kernel
         run: |
+          pushd ./tock/
           tockloader flash --board nrf52dk --openocd -a 0x0 ./target/thumbv7em-none-eabi/release/nrf52840dk.bin
+          popd
 
