@@ -84,6 +84,8 @@ pub unsafe fn main() {
     let (board_kernel, base_platform, chip, default_peripherals, mux_alarm) =
         nrf52840dk_lib::start();
 
+    debug!("Hello TockWorld 6");
+
     //--------------------------------------------------------------------------
     // IEEE 802.15.4 and UDP
     //--------------------------------------------------------------------------
