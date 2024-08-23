@@ -42,6 +42,7 @@ pub enum ClockPhase {
 
 /// Utility types for modeling chip select pins in a [SpiMaster] implementation.
 pub mod cs {
+    use core::borrow::Borrow;
 
     /// Represents the Polarity of a chip-select pin (i.e. whether
     /// high or low indicates the peripheral is active)
@@ -126,24 +127,31 @@ pub mod cs {
     /// A convenience wrapper type around
     /// [Output](crate::hil::gpio::Output) GPIO pins that implements
     /// [IntoChipSelect] for both [ActiveLow] and [ActiveHigh].
-    #[derive(Copy, Clone)]
-    pub struct ChipSelectPolar<T: crate::hil::gpio::Output, P: AsRef<T> + Copy> {
+    pub struct ChipSelectPolar<T: crate::hil::gpio::Output, P: Borrow<T> + Copy> {
         /// The underlying chip select "pin"
         pub pin: P,
         /// The polarity from which this wrapper was derived using
         /// [IntoChipSelect]
         pub polarity: Polarity,
-	_pd: core::marker::PhantomData<T>,
+        _pd: core::marker::PhantomData<T>,
     }
 
-    impl<T: crate::hil::gpio::Output, P: AsRef<T> + Copy, A: ChipSelectActivePolarity>
+    impl<T: crate::hil::gpio::Output, P: Borrow<T> + Copy> Clone for ChipSelectPolar<T, P> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    impl<T: crate::hil::gpio::Output, P: Borrow<T> + Copy> Copy for ChipSelectPolar<T, P> {}
+
+    impl<T: crate::hil::gpio::Output, P: Borrow<T> + Copy, A: ChipSelectActivePolarity>
         IntoChipSelect<ChipSelectPolar<T, P>, A> for P
     {
         fn into_cs(self) -> ChipSelectPolar<T, P> {
             ChipSelectPolar {
                 pin: self,
                 polarity: A::POLARITY,
-		_pd: core::marker::PhantomData,
+                _pd: core::marker::PhantomData,
             }
         }
     }
@@ -152,14 +160,14 @@ pub mod cs {
     /// [gpio::Output](crate::hil::gpio::Output), users can use the
     /// `activate` and `deactivate` methods to automatically set or
     /// clear the chip select pin based on the stored polarity.
-    impl<T: crate::hil::gpio::Output, P: AsRef<T> + Copy> ChipSelectPolar<T, P> {
+    impl<T: crate::hil::gpio::Output, P: Borrow<T> + Copy> ChipSelectPolar<T, P> {
         /// Deactive the chip select pin
         ///
         /// High if active low, low if active high
         pub fn deactivate(&self) {
             match self.polarity {
-                Polarity::Low => self.pin.as_ref().set(),
-                Polarity::High => self.pin.as_ref().clear(),
+                Polarity::Low => self.pin.borrow().set(),
+                Polarity::High => self.pin.borrow().clear(),
             }
         }
 
@@ -168,8 +176,8 @@ pub mod cs {
         /// Low if active low, high if active high
         pub fn activate(&self) {
             match self.polarity {
-                Polarity::Low => self.pin.as_ref().clear(),
-                Polarity::High => self.pin.as_ref().set(),
+                Polarity::Low => self.pin.borrow().clear(),
+                Polarity::High => self.pin.borrow().set(),
             }
         }
     }
