@@ -176,19 +176,19 @@ pub trait Output {
     }
 }
 
-impl<'a, O: Output> Output for &'a O {
-    fn set(&self) {
-        (*self).set()
-    }
+// impl<'a, O: Output> Output for &'a O {
+//     fn set(&self) {
+//         (*self).set()
+//     }
 
-    fn clear(&self) {
-        (*self).clear()
-    }
+//     fn clear(&self) {
+//         (*self).clear()
+//     }
 
-    fn toggle(&self) -> bool {
-        (*self).toggle()
-    }
-}
+//     fn toggle(&self) -> bool {
+//         (*self).toggle()
+//     }
+// }
 
 pub trait Input {
     /// Get the current state of an input GPIO pin. For an output

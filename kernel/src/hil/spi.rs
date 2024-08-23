@@ -127,21 +127,23 @@ pub mod cs {
     /// [Output](crate::hil::gpio::Output) GPIO pins that implements
     /// [IntoChipSelect] for both [ActiveLow] and [ActiveHigh].
     #[derive(Copy, Clone)]
-    pub struct ChipSelectPolar<P: crate::hil::gpio::Output> {
+    pub struct ChipSelectPolar<T: crate::hil::gpio::Output, P: AsRef<T> + Copy> {
         /// The underlying chip select "pin"
         pub pin: P,
         /// The polarity from which this wrapper was derived using
         /// [IntoChipSelect]
         pub polarity: Polarity,
+	_pd: core::marker::PhantomData<T>,
     }
 
-    impl<P: crate::hil::gpio::Output, A: ChipSelectActivePolarity>
-        IntoChipSelect<ChipSelectPolar<P>, A> for P
+    impl<T: crate::hil::gpio::Output, P: AsRef<T> + Copy, A: ChipSelectActivePolarity>
+        IntoChipSelect<ChipSelectPolar<T, P>, A> for P
     {
-        fn into_cs(self) -> ChipSelectPolar<P> {
+        fn into_cs(self) -> ChipSelectPolar<T, P> {
             ChipSelectPolar {
                 pin: self,
                 polarity: A::POLARITY,
+		_pd: core::marker::PhantomData,
             }
         }
     }
@@ -150,14 +152,14 @@ pub mod cs {
     /// [gpio::Output](crate::hil::gpio::Output), users can use the
     /// `activate` and `deactivate` methods to automatically set or
     /// clear the chip select pin based on the stored polarity.
-    impl<P: crate::hil::gpio::Output> ChipSelectPolar<P> {
+    impl<T: crate::hil::gpio::Output, P: AsRef<T> + Copy> ChipSelectPolar<T, P> {
         /// Deactive the chip select pin
         ///
         /// High if active low, low if active high
         pub fn deactivate(&self) {
             match self.polarity {
-                Polarity::Low => self.pin.set(),
-                Polarity::High => self.pin.clear(),
+                Polarity::Low => self.pin.as_ref().set(),
+                Polarity::High => self.pin.as_ref().clear(),
             }
         }
 
@@ -166,8 +168,8 @@ pub mod cs {
         /// Low if active low, high if active high
         pub fn activate(&self) {
             match self.polarity {
-                Polarity::Low => self.pin.clear(),
-                Polarity::High => self.pin.set(),
+                Polarity::Low => self.pin.as_ref().clear(),
+                Polarity::High => self.pin.as_ref().set(),
             }
         }
     }
