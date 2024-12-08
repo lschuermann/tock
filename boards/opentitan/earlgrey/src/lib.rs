@@ -71,6 +71,72 @@ impl EarlGreyConfig for ChipConfig {
     const UART_BAUDRATE: u32 = 7200;
 }
 
+use core::cell::Cell;
+use kernel::ProcessId;
+use kernel::syscall::CommandReturn;
+use kernel::grant::{Grant, AllowRoCount, UpcallCount, AllowRwCount};
+use kernel::syscall::SyscallDriver;
+use kernel::utilities::cells::OptionalCell;
+use kernel::hil::time::Time;
+
+struct UpcallLatencyDriver {
+    alarm: &'static earlgrey::timer::RvTimer<'static, ChipConfig>,
+    upcall_time: OptionalCell<<earlgrey::timer::RvTimer<'static, ChipConfig> as Time>::Ticks>,
+    grant: Grant<(), UpcallCount<1>, AllowRoCount<0>, AllowRwCount<0>>,
+    upcall_count: Cell<usize>,
+}
+
+impl SyscallDriver for UpcallLatencyDriver {
+    fn command(
+        &self,
+        cmd_type: usize,
+        _data: usize,
+        _data2: usize,
+        caller_id: ProcessId,
+    ) -> CommandReturn {
+	match cmd_type {
+	    0 => CommandReturn::success(),
+	    1 => {
+		// This is a signal that the process has registered
+		// the upcall, try to schedule it:
+		self.grant.enter(caller_id, |_, upcalls| {
+		    self.upcall_time.replace(self.alarm.now());
+		    upcalls.schedule_upcall(0, (0, 0, 0)).unwrap();
+		}).unwrap();
+
+		CommandReturn::success()
+	    },
+	    2 => {
+		// This was a full cycle: kernel -> userspace -> kernel
+		if self.upcall_count.get() < 100_000 {
+		    self.upcall_count.set(self.upcall_count.get() + 1);
+		    self.grant.enter(caller_id, |_, upcalls| {
+			upcalls.schedule_upcall(0, (0, 0, 0)).unwrap();
+		    }).unwrap();
+		    CommandReturn::success()
+		} else {
+		    use kernel::hil::time::{Ticks, ConvertTicks};
+
+		    let now = self.alarm.now();
+		    let ticks_elapsed = now.wrapping_sub(self.upcall_time.get().unwrap());
+		    let us_elapsed = self.alarm.ticks_to_us(ticks_elapsed);
+		    panic!(
+			"Ticks elapsed between {} upcalls and commands: {:?}, {:?} us",
+			self.upcall_count.get(),
+			ticks_elapsed,
+			us_elapsed
+		    );
+		}
+	    },
+	    _ => panic!("Unknown command number: {}", cmd_type),
+	}
+    }
+
+    fn allocate_grant(&self, processid: ProcessId) -> Result<(), kernel::process::Error> {
+        self.grant.enter(processid, |_, _| {})
+    }
+}
+
 // Whether to check for a proper ePMP handover configuration prior to ePMP
 // initialization:
 // pub const EPMP_HANDOVER_CONFIG_CHECK: bool = false;
@@ -227,6 +293,7 @@ pub struct EarlGrey {
             >,
         >,
     >,
+    upcall_latency: &'static UpcallLatencyDriver,
     syscall_filter: &'static TbfHeaderFilterDefaultAllow,
     scheduler: &'static PrioritySched,
     scheduler_timer: &'static VirtualSchedulerTimer<
@@ -253,6 +320,7 @@ impl SyscallDriverLookup for EarlGrey {
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules_extra::symmetric_encryption::aes::DRIVER_NUM => f(Some(self.aes)),
             capsules_extra::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
+	    0x99999999 => f(Some(self.upcall_latency)),
             _ => f(None),
         }
     }
@@ -789,6 +857,16 @@ pub unsafe fn start() -> (
     hil::symmetric_encryption::AES128GCM::set_client(gcm_client, aes);
     hil::symmetric_encryption::AES128::set_client(gcm_client, ccm_client);
 
+    let upcall_latency = static_init!(
+	UpcallLatencyDriver,
+	UpcallLatencyDriver {
+	    alarm: hardware_alarm,
+	    upcall_time: OptionalCell::empty(),
+            grant: board_kernel.create_grant(0x99999999, &memory_allocation_cap),
+	    upcall_count: Cell::new(0),
+        }
+    );
+
     let syscall_filter = static_init!(TbfHeaderFilterDefaultAllow, TbfHeaderFilterDefaultAllow {});
     let scheduler = components::sched::priority::PriorityComponent::new(board_kernel)
         .finalize(components::priority_component_static!());
@@ -812,6 +890,7 @@ pub unsafe fn start() -> (
             scheduler,
             scheduler_timer,
             watchdog,
+	    upcall_latency,
         }
     );
 

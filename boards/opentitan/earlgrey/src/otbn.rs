@@ -148,7 +148,11 @@ pub fn find_app(name: &str, app_flash: &'static [u8]) -> Result<(usize, usize, u
             // Parse the full TBF header to see if this is a valid app. If the
             // header can't parse, we will error right here.
             if let Ok(tbf_header) = tock_tbf::parse::parse_tbf_header(header_flash, version) {
-                let process_name = tbf_header.get_package_name().unwrap();
+                let process_name = tbf_header.get_package_name();
+		if process_name.is_none() {
+		    continue;
+		}
+		let process_name = process_name.unwrap();
 
                 // If the app is enabled, it's a real app and not what we are looking for.
                 if tbf_header.enabled() {
