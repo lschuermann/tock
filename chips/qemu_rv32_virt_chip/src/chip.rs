@@ -174,9 +174,11 @@ impl<'a, I: InterruptService + 'a> Chip for QemuRv32VirtChip<'a, I> {
         rv32i::support::with_interrupts_disabled(f)
     }
 
-    unsafe fn print_state(&self, writer: &mut dyn Write) {
+    unsafe fn print_state(instance: Option<&Self>, writer: &mut dyn Write) {
         rv32i::print_riscv_state(writer);
-        let _ = writer.write_fmt(format_args!("{}", self.pmp.pmp));
+	if let Some(this) = instance {
+            let _ = writer.write_fmt(format_args!("{}", this.pmp.pmp));
+	}
     }
 }
 
@@ -260,6 +262,7 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
 pub unsafe extern "C" fn start_trap_rust() {
     match mcause::Trap::from(CSR.mcause.extract()) {
         mcause::Trap::Interrupt(interrupt) => {
+	    panic!("interrupt trap!\n");
             handle_interrupt(interrupt);
         }
         mcause::Trap::Exception(exception) => {

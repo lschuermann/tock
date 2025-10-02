@@ -155,28 +155,26 @@ pub unsafe fn panic_print<W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
     writer: &mut W,
     panic_info: &PanicInfo,
     nop: &dyn Fn(),
-    panic_resources: Option<&PanicResources<C, PP>>,
+    opt_panic_resources: Option<&PanicResources<C, PP>>,
 ) {
     panic_begin(nop);
     // Flush debug buffer if needed
     flush(writer);
     panic_banner(writer, panic_info);
 
-    panic_resources.map(|pr| {
-        pr.chip.take().map(|c| {
-            c.print_state(writer);
+    let opt_chip = opt_panic_resources.and_then(|pr| pr.chip.take());
+    Chip::print_state(opt_chip, writer);
 
-            // Some systems may enforce memory protection regions for the kernel,
-            // making application memory inaccessible. However, printing process
-            // information will attempt to access memory. If we are provided a chip
-            // reference, attempt to disable userspace memory protection first:
-            use crate::platform::mpu::MPU;
-            c.mpu().disable_app_mpu()
-        });
-        pr.processes.take().map(|p| {
-            panic_process_info(p, pr.printer.take(), writer);
-        });
-    });
+    // Some systems may enforce memory protection regions for the kernel,
+    // making application memory inaccessible. However, printing process
+    // information will attempt to access memory. If we are provided a chip
+    // reference, attempt to disable userspace memory protection first:
+    use crate::platform::mpu::MPU;
+    opt_chip.map(|chip| chip.mpu().disable_app_mpu());
+
+    opt_panic_resources.map(|pr| pr.processes.take().map(|p| {
+        panic_process_info(p, pr.printer.take(), writer);
+    }));
 }
 
 /// Generic panic entry.
