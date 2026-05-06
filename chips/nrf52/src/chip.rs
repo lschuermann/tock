@@ -49,7 +49,13 @@ pub struct Nrf52DefaultPeripherals<'a> {
 }
 
 impl Nrf52DefaultPeripherals<'_> {
-    pub fn new() -> Self {
+    /// Construct a new [`Nrf52DefaultPeripherals`]
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure that this function is only invoked once, and only on
+    /// a compatible Nrf52 device.
+    pub unsafe fn new() -> Self {
         Self {
             acomp: crate::acomp::Comparator::new(),
             ecb: crate::aes::AesECB::new(),
@@ -61,7 +67,16 @@ impl Nrf52DefaultPeripherals<'_> {
             timer0: crate::timer::TimerAlarm::new(0),
             timer1: crate::timer::TimerAlarm::new(1),
             timer2: crate::timer::Timer::new(2),
-            uarte0: crate::uart::Uarte::new(crate::uart::UARTE0_BASE),
+            // # Safety
+            //
+            // The caller asserts that this function is only invoked once, and
+            // only on a compatible Nrf52 device. On such a device, we know that
+            // `UARTE0_BASE` is a valid pointer to the base of a set of MMIO
+            // registers following the `UarteRegisters` layout, with provenance
+            // allowing reads & writes to all registers.
+            uarte0: crate::uart::Uarte::new(unsafe {
+                crate::uart::UarteRegistersManager::new(crate::uart::UARTE0_BASE)
+            }),
             spim0: crate::spi::SPIM::new(0),
             twi1: crate::i2c::TWI::new_twi1(),
             spim2: crate::spi::SPIM::new(2),

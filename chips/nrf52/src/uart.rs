@@ -18,7 +18,6 @@ use kernel::utilities::io_write::IoWrite;
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::utilities::registers::interfaces::{Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite, WriteOnly};
-use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
 use nrf5x::gpio::Pin;
 use nrf5x::pinmux;
@@ -27,8 +26,14 @@ const UARTE_MAX_BUFFER_SIZE: usize = 0xff;
 
 static mut BYTE: u8 = 0;
 
-pub const UARTE0_BASE: StaticRef<UarteRegisters> =
-    unsafe { StaticRef::new(0x40002000 as *const UarteRegisters) };
+/// Pointer to the base of the UARTE0 device MMIO registers.
+///
+/// Follows the register layout modeled in [`UarteRegisters`].
+///
+/// Created using [`with_exposed_provenance`], as these MMIO addresses are
+/// outside of Rust's abstract machine model, and Rust always considers
+/// provenance to be exposed for such pointers.
+pub const UARTE0_BASE: *mut UarteRegisters = core::ptr::with_exposed_provenance_mut(0x40002000);
 
 #[repr(C)]
 pub struct UarteRegisters {
@@ -163,9 +168,9 @@ register_bitfields! [u32,
 ];
 
 /// Wrapper for managing MMIO for UARTE.
-struct UarteRegistersManager {
+pub struct UarteRegistersManager {
     /// MMIO registers for the UARTE peripheral.
-    registers: StaticRef<UarteRegisters>,
+    registers: &'static UarteRegisters,
     /// Holding place for the TX DMA buffer while DMA in progress.
     tx_dma_buf: MapCell<DmaSubSliceMut<'static, u8>>,
     /// Holding place for the RX DMA buffer while DMA in progress.
@@ -173,12 +178,45 @@ struct UarteRegistersManager {
 }
 
 impl UarteRegistersManager {
-    pub fn new(regs: StaticRef<UarteRegisters>) -> Self {
-        Self {
-            registers: regs,
+    /// Create a new [`UarteRegistersManager`].
+    ///
+    /// # Safety
+    ///
+    /// `mmio_reg_base` must be a valid pointer to the base address of a set of
+    /// MMIO registers following the layout described in [`UarteRegisters`].
+    /// It's provenance must allow reads from and writes to all of the registers
+    /// described by [`UarteRegisters`].
+    ///
+    /// This function is safe to be called multiple times if and only if all
+    /// previously constructed instances will never be used following a call to
+    /// `new`. To prevent any undefined behavior introduced through register
+    /// reads / writes that interact with any DMA operations started before this
+    /// manager was constructed, all in-progress DMA operations are stopped when
+    /// executing this function.
+    pub unsafe fn new(mmio_reg_base: *mut UarteRegisters) -> Self {
+        // # Safety
+        //
+        // The caller assures that this is a valid pointer to the base address
+        // of a set of MMIO registers following the layout described in
+        // [`UarteRegisters`], with sufficient provenance to read from & write
+        // to these registers.
+        //
+        // We ensure that any register reads & writes combined with any
+        // concurrently running DMA operations will not introduce undefined
+        // behavior by unconditionally stopping any such operations before any
+        // other register accesses below.
+        let registers = unsafe { &*mmio_reg_base.cast_const() };
+
+        let mgr = Self {
+            registers,
             tx_dma_buf: MapCell::empty(),
             rx_dma_buf: MapCell::empty(),
-        }
+        };
+
+        assert!(mgr.finish_tx_dma().is_none());
+        assert!(mgr.finish_rx_dma().is_none());
+
+        mgr
     }
 
     /// Start a UART transmission with DMA.
@@ -336,11 +374,9 @@ pub struct UARTParams {
 }
 
 impl<'a> Uarte<'a> {
-    /// Constructor
-    // This should only be constructed once
-    pub fn new(regs: StaticRef<UarteRegisters>) -> Uarte<'a> {
+    pub fn new(registers: UarteRegistersManager) -> Uarte<'a> {
         Uarte {
-            registers: UarteRegistersManager::new(regs),
+            registers,
             tx_client: OptionalCell::empty(),
             // tx_buffer: kernel::utilities::cells::TakeCell::empty(),
             tx_len: Cell::new(0),
@@ -840,7 +876,15 @@ impl kernel::platform::chip::PanicWriter for Uarte<'_> {
     unsafe fn create_panic_writer(config: Self::Config) -> impl IoWrite + core::fmt::Write {
         use uart::Configure as _;
 
-        let inner = Uarte::new(UARTE0_BASE);
+        // # Safety
+        //
+        // The caller asserts that, after `create_panic_writer` is called, any
+        // previous instances of `UarteRegistersManager` become transitively
+        // unreachable and will not be used going further.
+        //
+        // TODO: missing safety invariant from this trait: function must be
+        // invoked on the correct device.
+        let inner = Uarte::new(unsafe { UarteRegistersManager::new(UARTE0_BASE) });
         inner.initialize(
             pinmux::Pinmux::from_pin(config.txd),
             pinmux::Pinmux::from_pin(config.rxd),
