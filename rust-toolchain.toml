@@ -12,4 +12,7 @@ targets = ["thumbv6m-none-eabi",
            "riscv32imc-unknown-none-elf",
            "riscv32imac-unknown-none-elf",
            "riscv64imac-unknown-none-elf",
+           # Static builds of tools/harness for Treadmill hosts:
+           "x86_64-unknown-linux-musl",
+           "aarch64-unknown-linux-musl",
            ]

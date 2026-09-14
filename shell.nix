@@ -64,6 +64,8 @@ in
 
       # --- CI support packages ---
       qemu
+      pkg-config
+      udev
 
       # --- Flashing tools ---
       # If your board requires J-Link to flash and you are on NixOS,
@@ -87,7 +89,6 @@ in
     # The defaults "objcopy" and "objdump" are wrong (stem from the standard
     # environment for x86), use "llvm-obj{copy,dump}" as defined in the makefile
     shellHook = ''
-      unset OBJCOPY
-      unset OBJDUMP
+      unset OBJCOPY OBJDUMP AR AS CXX RANLIB
     '';
   }

@@ -591,24 +591,24 @@ impl<'a, DMA: dma::StreamServer<'a>> DeferredCallClient for Usart<'a, DMA> {
     }
 
     fn handle_deferred_call(&self) {
+        // Return to Idle before the callback, so clients can start a new
+        // operation from within it.
         if let USARTStateTX::Aborted(rcode) = self.usart_tx_state.get() {
-            // alert client
+            self.usart_tx_state.set(USARTStateTX::Idle);
             self.tx_client.map(|client| {
                 self.partial_tx_buffer.take().map(|buf| {
                     client.transmitted_buffer(buf, self.partial_tx_len.get(), rcode);
                 });
             });
-            self.usart_tx_state.set(USARTStateTX::Idle);
         }
 
         if let USARTStateRX::Aborted(rcode, error) = self.usart_rx_state.get() {
-            // alert client
+            self.usart_rx_state.set(USARTStateRX::Idle);
             self.rx_client.map(|client| {
                 self.partial_rx_buffer.take().map(|buf| {
                     client.received_buffer(buf, self.partial_rx_len.get(), rcode, error);
                 });
             });
-            self.usart_rx_state.set(USARTStateRX::Idle);
         }
     }
 }
