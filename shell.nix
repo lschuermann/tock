@@ -64,6 +64,8 @@ in
 
       # --- CI support packages ---
       qemu
+      pkg-config
+      udev
 
       # --- Flashing tools ---
       # If your board requires J-Link to flash and you are on NixOS,
