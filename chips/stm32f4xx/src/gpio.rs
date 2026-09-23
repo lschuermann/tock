@@ -1248,3 +1248,91 @@ impl<'a> hil::gpio::Interrupt<'a> for Pin<'a> {
             .map_or(false, |lineid| self.exti.is_pending(lineid))
     }
 }
+
+/// An LED on a GPIO pin, for panic handlers.
+///
+/// Unlike an LED on a [`Pin`], this drives the port's registers directly. It
+/// requires neither [`GpioPorts`], which is several kilobytes large, nor any
+/// other driver object, which a panic handler would have to create on its
+/// stack: the kernel's instances are not accessible from all panic contexts.
+pub struct PanicLed {
+    pinid: PinId,
+    active_high: bool,
+}
+
+impl PanicLed {
+    pub const fn new(pinid: PinId, activation_mode: hil::gpio::ActivationMode) -> Self {
+        Self {
+            pinid,
+            active_high: matches!(activation_mode, hil::gpio::ActivationMode::ActiveHigh),
+        }
+    }
+
+    fn port_registers(&self) -> StaticRef<GpioRegisters> {
+        match self.pinid.get_port_number() {
+            0 => GPIOA_BASE,
+            1 => GPIOB_BASE,
+            2 => GPIOC_BASE,
+            3 => GPIOD_BASE,
+            4 => GPIOE_BASE,
+            5 => GPIOF_BASE,
+            6 => GPIOG_BASE,
+            _ => GPIOH_BASE,
+        }
+    }
+
+    fn set_output(&self, high: bool) {
+        // The lower half of BSRR sets pins, the upper half resets them.
+        let pin = u32::from(self.pinid.get_pin_number());
+        let bit = if high { pin } else { pin + 16 };
+        self.port_registers().bsrr.set(1 << bit);
+    }
+
+    fn get_output(&self) -> bool {
+        let pin = self.pinid.get_pin_number();
+        self.port_registers().odr.get() & (1 << pin) != 0
+    }
+}
+
+impl hil::led::Led for PanicLed {
+    fn init(&self) {
+        let rcc = crate::rcc::Rcc::new_for_panic();
+        match self.pinid.get_port_number() {
+            0 => rcc.enable_gpioa_clock(),
+            1 => rcc.enable_gpiob_clock(),
+            2 => rcc.enable_gpioc_clock(),
+            3 => rcc.enable_gpiod_clock(),
+            4 => rcc.enable_gpioe_clock(),
+            5 => rcc.enable_gpiof_clock(),
+            6 => rcc.enable_gpiog_clock(),
+            _ => rcc.enable_gpioh_clock(),
+        }
+
+        self.off();
+
+        // Configure the pin as a push-pull output.
+        let registers = self.port_registers();
+        let pin = u32::from(self.pinid.get_pin_number());
+        registers.otyper.set(registers.otyper.get() & !(1 << pin));
+        registers.moder.set(
+            (registers.moder.get() & !(0b11 << (2 * pin)))
+                | ((Mode::GeneralPurposeOutputMode as u32) << (2 * pin)),
+        );
+    }
+
+    fn on(&self) {
+        self.set_output(self.active_high);
+    }
+
+    fn off(&self) {
+        self.set_output(!self.active_high);
+    }
+
+    fn toggle(&self) {
+        self.set_output(!self.get_output());
+    }
+
+    fn read(&self) -> bool {
+        self.get_output() == self.active_high
+    }
+}
