@@ -534,14 +534,7 @@ impl<T> SingleThreadValue<T> {
 
         // Finally, check if the thread this `SingleThreadValue` is bound to
         // is the running thread ID:
-        //
-        // TEMPORARY, UNSOUND, DO NOT MERGE: ignore the thread ID and treat the
-        // value as bound to every thread. This makes panics raised in
-        // interrupt / trap context (e.g., a kernel HardFault) able to reach
-        // the debug writer, panic resources, and deferred calls, instead of
-        // recursively panicking in `DeferredCall::new()`.
-        let _ = bound_thread_id == running_thread_id_fn();
-        true
+        bound_thread_id == running_thread_id_fn()
     }
 
     /// Obtain a reference to the contained value.
