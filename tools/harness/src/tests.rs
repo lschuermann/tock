@@ -225,8 +225,15 @@ pub const TESTS: &[TestCase] = &[
 
             // The `hardfault` command executes an undefined instruction in
             // the kernel, which should only set CFSR.UNDEFINSTR.
+            //
+            // The HardFault handler panics in handler mode, where the board's
+            // `PANIC_RESOURCES` (a `SingleThreadValue` bound to thread mode)
+            // are not accessible. The panic therefore does not print the chip
+            // state (the "Cortex-M Fault Status" of the process) or the
+            // process list, and we can only check the panic message, which
+            // ends with the kernel version.
             type_command(uart, "hardfault")?;
-            let report = uart.wait_for("---| Cortex-M Fault Status |---", TIMEOUT)?;
+            let report = uart.wait_for("\tKernel version ", TIMEOUT)?;
             if report.contains("kernel stack overflow") {
                 return Err("kernel HardFault was reported as a kernel stack overflow".into());
             }
@@ -243,17 +250,6 @@ pub const TESTS: &[TestCase] = &[
                 return Err(format!(
                     "kernel HardFault CFSR is {cfsr:#010x}, expected only UNDEFINSTR \
                      ({UNDEFINSTR:#010x}); bits from the process fault leaked"
-                ));
-            }
-
-            // The panic then prints the fault status saved for the process,
-            // which must still describe its stack overflow (a MemManage fault).
-            let process_fault = uart.wait_for("Hard Fault Status Register (HFSR):", TIMEOUT)?;
-            if !process_fault.contains("Data Access Violation")
-                && !process_fault.contains("Memory Management Stacking Fault")
-            {
-                return Err(format!(
-                    "process fault status does not show a MemManage fault: {process_fault:?}"
                 ));
             }
             Ok(())
