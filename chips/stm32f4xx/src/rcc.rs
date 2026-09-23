@@ -6,6 +6,8 @@ use kernel::utilities::StaticRef;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable};
 use kernel::utilities::registers::{ReadWrite, register_bitfields};
 
+use crate::clocks::hsi::HSI_FREQUENCY_MHZ;
+
 /// Reset and clock control
 #[repr(C)]
 struct RccRegisters {
@@ -747,6 +749,51 @@ impl Rcc {
         };
         rcc.init();
         rcc
+    }
+
+    /// Create an `Rcc` for use in a panic handler.
+    ///
+    /// Unlike [`Rcc::new`], this does not reinitialize the PLL configuration,
+    /// which must not change while the PLL is running. A panic can happen at
+    /// any time after the kernel configured its clocks, so panic handlers must
+    /// only read the clock configuration or enable additional peripheral
+    /// clocks.
+    pub(crate) const fn new_for_panic() -> Self {
+        Self {
+            registers: RCC_BASE,
+        }
+    }
+
+    /// Compute the system clock frequency in Hz from the RCC registers alone,
+    /// without the state cached by the [`Clocks`](crate::clocks::Clocks)
+    /// driver.
+    ///
+    /// The HSE frequency cannot be read from the registers. If the system
+    /// clock is derived from the HSE, this uses `hse_frequency_mhz`, and
+    /// returns `None` if that is not provided.
+    pub(crate) fn get_sys_clock_frequency_no_cache(
+        &self,
+        hse_frequency_mhz: Option<usize>,
+    ) -> Option<usize> {
+        let hsi_frequency = HSI_FREQUENCY_MHZ * 1_000_000;
+        let hse_frequency = hse_frequency_mhz.map(|mhz| mhz * 1_000_000);
+
+        match self.get_sys_clock_source() {
+            SysClockSource::HSI => Some(hsi_frequency),
+            SysClockSource::HSE => hse_frequency,
+            SysClockSource::PLL => {
+                let source_frequency = match self.get_pll_clocks_source() {
+                    PllSource::HSI => hsi_frequency,
+                    PllSource::HSE => hse_frequency?,
+                };
+                // Read PLLM directly, as `get_pll_clocks_m_divider` panics for
+                // dividers other than the ones this crate configures.
+                let pllm = self.registers.pllcfgr.read(PLLCFGR::PLLM) as usize;
+                let plln = self.get_pll_clock_n_multiplier();
+                let pllp: usize = self.get_pll_clock_p_divider().into();
+                Some(source_frequency.checked_div(pllm)? * plln / pllp)
+            }
+        }
     }
 
     // Some clocks need to be initialized before use

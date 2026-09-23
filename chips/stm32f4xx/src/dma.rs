@@ -1347,6 +1347,37 @@ impl<'a, DMA: StreamServer<'a>> Stream<'a, DMA> {
     }
 }
 
+/// Stop a DMA stream directly through the DMA controller's registers.
+///
+/// This is for panic handlers, which may run while the [`Stream`] driver is in
+/// the middle of a transfer, and therefore cannot use it. The stream is only
+/// stopped if it is currently set up for `channel`, so that a stream serving
+/// another peripheral is left alone.
+///
+/// This does not wait for the stream to stop: once `EN` is cleared, the stream
+/// completes at most its current data item, and it does not generate any more
+/// requests afterwards.
+fn stop_stream_for_panic(registers: &DmaRegisters, stream: StreamId, channel: ChannelId) {
+    macro_rules! stop_stream {
+        ($cr:ident, $CR:ident) => {
+            if registers.$cr.read($CR::CHSEL) == channel as u32 {
+                registers.$cr.modify($CR::EN::CLEAR + $CR::TCIE::CLEAR);
+            }
+        };
+    }
+
+    match stream {
+        StreamId::Stream0 => stop_stream!(s0cr, S0CR),
+        StreamId::Stream1 => stop_stream!(s1cr, S1CR),
+        StreamId::Stream2 => stop_stream!(s2cr, S2CR),
+        StreamId::Stream3 => stop_stream!(s3cr, S3CR),
+        StreamId::Stream4 => stop_stream!(s4cr, S4CR),
+        StreamId::Stream5 => stop_stream!(s5cr, S5CR),
+        StreamId::Stream6 => stop_stream!(s6cr, S6CR),
+        StreamId::Stream7 => stop_stream!(s7cr, S7CR),
+    }
+}
+
 /// Interface required for each Peripheral by the DMA Stream.
 ///
 /// The data defined here may vary by Peripheral. It is used by the DMA Stream
@@ -1422,6 +1453,13 @@ impl Dma1Peripheral {
 
     pub fn get_stream_idx(&self) -> usize {
         usize::from(StreamId::from(*self) as u8)
+    }
+
+    /// Stop this peripheral's DMA stream from a panic handler.
+    ///
+    /// See [`stop_stream_for_panic`].
+    pub(crate) fn stop_stream_for_panic(self) {
+        stop_stream_for_panic(&DMA1_BASE, self.into(), self.channel_id());
     }
 }
 
@@ -1598,6 +1636,13 @@ impl Dma2Peripheral {
 
     pub fn get_stream_idx(&self) -> usize {
         usize::from(StreamId::from(*self) as u8)
+    }
+
+    /// Stop this peripheral's DMA stream from a panic handler.
+    ///
+    /// See [`stop_stream_for_panic`].
+    pub(crate) fn stop_stream_for_panic(self) {
+        stop_stream_for_panic(&DMA2_BASE, self.into(), self.channel_id());
     }
 }
 

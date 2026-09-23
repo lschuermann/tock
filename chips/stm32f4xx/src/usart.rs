@@ -6,15 +6,17 @@ use core::cell::Cell;
 use kernel::ErrorCode;
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
-use kernel::platform::chip::ClockInterface;
+use kernel::platform::chip::{ClockInterface, PanicWriter};
 use kernel::utilities::StaticRef;
 use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::utilities::io_write::IoWrite;
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{ReadWrite, register_bitfields};
 
 use crate::clocks::{Stm32f4Clocks, phclk};
 use crate::dma;
+use crate::rcc::Rcc;
 
 /// Universal synchronous asynchronous receiver transmitter
 #[repr(C)]
@@ -777,3 +779,205 @@ impl ClockInterface for UsartClock<'_> {
     }
 }
 
+/// Identifies a USART instance, for configuring the panic writer.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum UsartId {
+    Usart1,
+    Usart2,
+    Usart3,
+}
+
+impl UsartId {
+    fn registers(self) -> StaticRef<UsartRegisters> {
+        match self {
+            UsartId::Usart1 => USART1_BASE,
+            UsartId::Usart2 => USART2_BASE,
+            UsartId::Usart3 => USART3_BASE,
+        }
+    }
+
+    fn enable_clock(self, rcc: &Rcc) {
+        match self {
+            UsartId::Usart1 => rcc.enable_usart1_clock(),
+            UsartId::Usart2 => rcc.enable_usart2_clock(),
+            UsartId::Usart3 => rcc.enable_usart3_clock(),
+        }
+    }
+
+    // Divider of the APB clock that this USART is on, relative to the AHB
+    // (and CPU) clock.
+    fn get_apb_divider(self, rcc: &Rcc) -> usize {
+        match self {
+            UsartId::Usart1 => rcc.get_apb2_prescaler().into(),
+            UsartId::Usart2 | UsartId::Usart3 => rcc.get_apb1_prescaler().into(),
+        }
+    }
+
+    // Frequency in Hz of the APB clock that this USART is on, computed from
+    // the RCC registers.
+    fn get_pclk_frequency(self, rcc: &Rcc, hse_frequency_mhz: Option<usize>) -> Option<u32> {
+        let sys_clock_frequency = rcc.get_sys_clock_frequency_no_cache(hse_frequency_mhz)?;
+        let ahb_divider: usize = rcc.get_ahb_prescaler().into();
+        Some((sys_clock_frequency / ahb_divider / self.get_apb_divider(rcc)) as u32)
+    }
+
+    fn stop_dma_streams(self) {
+        match self {
+            UsartId::Usart1 => {
+                dma::Dma2Peripheral::USART1_TX.stop_stream_for_panic();
+                dma::Dma2Peripheral::USART1_RX.stop_stream_for_panic();
+            }
+            UsartId::Usart2 => {
+                dma::Dma1Peripheral::USART2_TX.stop_stream_for_panic();
+                dma::Dma1Peripheral::USART2_RX.stop_stream_for_panic();
+            }
+            UsartId::Usart3 => {
+                dma::Dma1Peripheral::USART3_TX.stop_stream_for_panic();
+                dma::Dma1Peripheral::USART3_RX.stop_stream_for_panic();
+            }
+        }
+    }
+}
+
+/// A synchronous writer for the STM32F4 USART, for panics.
+///
+/// For boards that want to use a USART to display panic messages, this
+/// provides an implementation of [`PanicWriter`] with synchronous output.
+///
+/// This is only to be used by panic messages and is not used within the normal
+/// operation of the Tock kernel.
+struct UsartPanicWriter {
+    registers: StaticRef<UsartRegisters>,
+}
+
+impl IoWrite for UsartPanicWriter {
+    fn write(&mut self, buf: &[u8]) -> usize {
+        for &c in buf {
+            while !self.registers.sr.is_set(SR::TXE) {}
+            self.registers.dr.set(c.into());
+        }
+        buf.len()
+    }
+}
+
+impl core::fmt::Write for UsartPanicWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Configuration for the synchronous USART panic writer.
+///
+/// This captures everything needed to set up the USART for panic display, even
+/// if the kernel had configured it differently, or not at all.
+pub struct UsartPanicWriterConfig {
+    /// The USART to write panic messages to.
+    pub usart: UsartId,
+    /// The UART parameters to use.
+    ///
+    /// Hardware flow control is never enabled for panic output, so that a peer
+    /// that does not assert CTS cannot stall the panic handler. The USART
+    /// only supports 8 or 9 bit frames, including the parity bit, so 6 data
+    /// bits are not supported, and 7 data bits only with parity.
+    pub params: hil::uart::Parameters,
+    /// The HSE frequency in MHz, if known.
+    ///
+    /// The writer computes the baud rate from the clock configuration in the
+    /// RCC registers, which do not contain the HSE frequency. If the system
+    /// clock is derived from the HSE, and this is `None`, the writer keeps the
+    /// baud rate that the kernel configured.
+    pub hse_frequency_mhz: Option<usize>,
+}
+
+impl<'a, DMA: dma::StreamServer<'a>> PanicWriter for Usart<'a, DMA> {
+    type Config = UsartPanicWriterConfig;
+
+    fn create_panic_writer(
+        config: Self::Config,
+        _panic: &core::panic::PanicInfo,
+    ) -> impl IoWrite + core::fmt::Write {
+        // The panic may have interrupted the kernel's `Usart` driver in the
+        // middle of an operation, and may run in a context (such as the
+        // HardFault handler) where the kernel state the driver depends on,
+        // like its `DeferredCall`, is not available. Therefore, this does not
+        // construct a `Usart`, and instead sets up the USART through its
+        // registers only.
+        let rcc = Rcc::new_for_panic();
+        let registers = config.usart.registers();
+        let params = config.params;
+
+        config.usart.enable_clock(&rcc);
+
+        // Stop any DMA transfer and disable all interrupts. Clearing all of
+        // CR3 disables the DMA requests (DMAT, DMAR) and hardware flow control,
+        // so the DMA streams cannot drive the USART anymore, and an in-flight
+        // character cannot be stalled by CTS.
+        registers.cr3.set(0);
+        registers.cr2.modify(CR2::LBDIE::CLEAR);
+        registers.cr1.modify(
+            CR1::PEIE::CLEAR
+                + CR1::TXEIE::CLEAR
+                + CR1::TCIE::CLEAR
+                + CR1::RXNEIE::CLEAR
+                + CR1::IDLEIE::CLEAR,
+        );
+        config.usart.stop_dma_streams();
+
+        // Let the transmitter finish the characters it has already started
+        // sending before reconfiguring it. Without DMA requests, at most two
+        // characters are pending: one in the data register, and one in the
+        // shift register. TC does not tell whether the transmitter is still
+        // busy, as the `Usart` driver clears it after each transfer. Instead,
+        // wait for two frames at the kernel's configuration: a frame has at
+        // most 12 bits, and a bit takes at most `BRR` cycles of the peripheral
+        // clock, which is the CPU clock divided by the APB prescaler. Each loop
+        // iteration takes at least one CPU cycle.
+        if registers.cr1.matches_all(CR1::UE::SET + CR1::TE::SET) {
+            let frame_cycles = 12 * registers.brr.get() * config.usart.get_apb_divider(&rcc) as u32;
+            for _ in 0..2 * frame_cycles {
+                let _ = registers.sr.get();
+            }
+        }
+
+        // Disable the USART while reconfiguring it. If we cannot compute the
+        // baud rate, keep the kernel's settings for it.
+        let kernel_over8 = registers.cr1.is_set(CR1::OVER8);
+        registers.cr1.set(0);
+
+        let over8 = match config
+            .usart
+            .get_pclk_frequency(&rcc, config.hse_frequency_mhz)
+            .and_then(|pclk_freq| compute_baud_rate(pclk_freq, params.baud_rate).ok())
+        {
+            Some((over8, mantissa, fraction)) => {
+                registers
+                    .brr
+                    .write(BRR::DIV_Mantissa.val(mantissa) + BRR::DIV_Fraction.val(fraction));
+                over8
+            }
+            None => kernel_over8,
+        };
+
+        let stop_bits = match params.stop_bits {
+            hil::uart::StopBits::One => 0b00,
+            hil::uart::StopBits::Two => 0b10,
+        };
+        registers.cr2.write(CR2::STOP.val(stop_bits));
+
+        // The parity bit takes the place of the most significant bit of the
+        // frame, so 8 data bits with parity require a 9 bit frame.
+        let parity = params.parity != hil::uart::Parity::None;
+        let nine_bit_frame = parity && params.width == hil::uart::Width::Eight;
+        registers.cr1.write(
+            CR1::OVER8.val(over8.into())
+                + CR1::M.val(nine_bit_frame.into())
+                + CR1::PCE.val(parity.into())
+                + CR1::PS.val((params.parity == hil::uart::Parity::Odd).into())
+                + CR1::TE::SET,
+        );
+        registers.cr1.modify(CR1::UE::SET);
+
+        UsartPanicWriter { registers }
+    }
+}
