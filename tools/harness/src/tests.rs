@@ -16,6 +16,10 @@ const NRF: &[BoardKind] = &[BoardKind::Nrf52840Dk];
 const NUCLEO: &[BoardKind] = &[BoardKind::NucleoF429zi];
 const PHYSICAL: &[BoardKind] = &[BoardKind::Nrf52840Dk, BoardKind::NucleoF429zi];
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// How long to run the `switch_stress` app for. At about 5000 system calls per
+/// second on the NUCLEO-F429ZI, this covers one full sweep of its alarm
+/// deadlines (17 bands of at most 16384 calls each).
+const SWITCH_STRESS_DURATION: Duration = Duration::from_secs(60);
 
 const LED0: Requirement = Requirement::Gpio {
     name: "led0",
@@ -256,6 +260,56 @@ pub const TESTS: &[TestCase] = &[
         }),
     },
     TestCase {
+        // Regression test for https://github.com/tock/tock/pull/5193 (see also
+        // https://github.com/tock/tock/issues/3109): on ARMv7-M, an exception
+        // tail-chained onto an app's `svc` could make the SVC handler switch
+        // straight back to the app, without the kernel ever handling its
+        // system call. The `switch_stress` app races alarm interrupts against
+        // system calls to a nonexistent driver, and reports calls that return
+        // their own arguments ("echoes") or other unexpected values ("bad").
+        //
+        // The alarm upcalls arriving while the app waits for its `printf`s
+        // also exercise https://github.com/tock/tock/pull/5195, a race that
+        // left a yield-wait-for'ing process stuck forever.
+        id: "switch_stress",
+        boards: PHYSICAL,
+        requires: &[Requirement::Uart],
+        apps: &["tests/switch_stress"],
+        body: TestBody::Run(|ctx| {
+            let uart = ctx.uart();
+            uart.wait_for("switch_stress: ", TIMEOUT)?;
+            let start = Instant::now();
+            let mut reports = 0;
+            while start.elapsed() < SWITCH_STRESS_DURATION {
+                let line = uart.wait_for("\n", TIMEOUT).map_err(|e| {
+                    format!(
+                        "switch_stress stopped printing after {:?} and {reports} progress \
+                         reports; is it stuck yield-wait-for'ing its console write? {e}",
+                        start.elapsed()
+                    )
+                })?;
+                let line = line.trim();
+                let failed = ["FAIL:", "fault", "panic", "switch_stress: "]
+                    .iter()
+                    .any(|needle| line.contains(needle));
+                let counts = ["echoes=", "bad="].map(|name| report_field(line, name));
+                if failed || counts.iter().any(|count| count.is_some_and(|c| c != 0)) {
+                    return Err(format!(
+                        "failed after {:?} and {reports} progress reports: {line:?}",
+                        start.elapsed()
+                    ));
+                }
+                if counts.iter().all(Option::is_some) {
+                    reports += 1;
+                }
+            }
+            if reports == 0 {
+                return Err("switch_stress never reported progress".into());
+            }
+            Ok(())
+        }),
+    },
+    TestCase {
         id: "blink",
         boards: NRF,
         requires: &[LED0, LED1],
@@ -488,6 +542,14 @@ fn expect_state(uart: &mut dyn Uart, name: &str, state: &str) -> Result<(), Stri
             "expected process {name} to be {state}, got {row:?}"
         )),
     }
+}
+
+/// Parses the value of a `name=value` field in a `switch_stress` progress
+/// report.
+fn report_field(line: &str, name: &str) -> Option<u64> {
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix(name))
+        .and_then(|value| value.parse().ok())
 }
 
 fn ms(ms: u64) -> Duration {
