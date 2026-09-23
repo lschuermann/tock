@@ -466,6 +466,33 @@ pub fn panic_blink_forever<L: hil::led::Led>(leds: &mut [&L]) -> ! {
     }
 }
 
+/// Trigger a hardware fault in the kernel by executing an undefined
+/// instruction.
+///
+/// Unlike `panic!()`, this exercises the architecture's fault handling path,
+/// which is useful for testing it. On architectures without such an
+/// instruction here, this falls back to a regular panic.
+pub fn hardfault() -> ! {
+    // SAFETY: executing an undefined instruction traps into the kernel's fault
+    // handler, which never returns to this code. No memory is accessed.
+    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+    unsafe {
+        core::arch::asm!("udf #0", options(noreturn, nomem, nostack))
+    }
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    unsafe {
+        core::arch::asm!("unimp", options(noreturn, nomem, nostack))
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        core::arch::asm!("ud2", options(noreturn, nomem, nostack))
+    }
+    #[allow(unreachable_code)]
+    {
+        panic!("hardfault() is not supported on this architecture");
+    }
+}
+
 // panic! support routines
 ///////////////////////////////////////////////////////////////////
 
