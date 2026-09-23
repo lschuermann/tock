@@ -515,57 +515,10 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
     }
 
     fn set_baud_rate(&self, baud_rate: u32) -> Result<(), ErrorCode> {
-        // USARTDIV calculation based on stm32-rs stm32f4xx-hal:
-        // https://github.com/stm32-rs/stm32f4xx-hal/blob/v0.20.0/src/serial/uart_impls.rs#L145
-        //
-        // The equation to calculate USARTDIV is this:
-        //
-        // (Taken from STM32F411xC/E Reference Manual, Section 19.3.4, Equation 1)
-        //
-        // 16 bit oversample: OVER8 = 0
-        // 8 bit oversample:  OVER8 = 1
-        //
-        // USARTDIV =          (pclk)
-        //            ------------------------
-        //            8 x (2 - OVER8) x (baud)
-        //
-        // BUT, the USARTDIV has 4 "fractional" bits, which effectively means that we need to
-        // "correct" the equation as follows:
-        //
-        // USARTDIV =      (pclk) * 16
-        //            ------------------------
-        //            8 x (2 - OVER8) x (baud)
-        //
-        // When OVER8 is enabled, we can only use the lowest three fractional bits, so we'll need
-        // to shift those last four bits right one bit
+        let (over8, mantissa, fraction) =
+            compute_baud_rate(self.clock.0.get_frequency(), baud_rate)?;
 
-        let pclk_freq = self.clock.0.get_frequency();
-
-        let (mantissa, fraction) = if (pclk_freq / 16) >= baud_rate {
-            // We have the ability to oversample to 16 bits, take advantage of it.
-            //
-            // We also add `baud / 2` to the `pclk_freq` to ensure rounding of values to the
-            // closest scale, rather than the floored behavior of normal integer division.
-            let div = (pclk_freq + (baud_rate / 2)) / baud_rate;
-
-            self.registers.cr1.modify(CR1::OVER8::CLEAR);
-
-            (div >> 4, div & 0x0F)
-        } else if (pclk_freq / 8) >= baud_rate {
-            // We are close enough to pclk where we can only
-            // oversample 8.
-
-            // See note above regarding `baud` and rounding.
-            let div = ((pclk_freq * 2) + (baud_rate / 2)) / baud_rate;
-
-            self.registers.cr1.modify(CR1::OVER8::SET);
-
-            // Ensure the the fractional bits (only 3) are right-aligned.
-            (div >> 4, (div & 0x0F) >> 1)
-        } else {
-            return Err(ErrorCode::INVAL);
-        };
-
+        self.registers.cr1.modify(CR1::OVER8.val(over8.into()));
         self.registers.brr.modify(BRR::DIV_Mantissa.val(mantissa));
         self.registers.brr.modify(BRR::DIV_Fraction.val(fraction));
         Ok(())
@@ -582,6 +535,58 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
             self.registers.cr1.modify(CR1::UE::CLEAR);
             Ok(())
         }
+    }
+}
+
+/// Compute the oversampling mode (whether `OVER8` is set) and the `BRR`
+/// mantissa and fraction for `baud_rate`, given the USART's peripheral clock
+/// frequency `pclk_freq` in Hz.
+fn compute_baud_rate(pclk_freq: u32, baud_rate: u32) -> Result<(bool, u32, u32), ErrorCode> {
+    // USARTDIV calculation based on stm32-rs stm32f4xx-hal:
+    // https://github.com/stm32-rs/stm32f4xx-hal/blob/v0.20.0/src/serial/uart_impls.rs#L145
+    //
+    // The equation to calculate USARTDIV is this:
+    //
+    // (Taken from STM32F411xC/E Reference Manual, Section 19.3.4, Equation 1)
+    //
+    // 16 bit oversample: OVER8 = 0
+    // 8 bit oversample:  OVER8 = 1
+    //
+    // USARTDIV =          (pclk)
+    //            ------------------------
+    //            8 x (2 - OVER8) x (baud)
+    //
+    // BUT, the USARTDIV has 4 "fractional" bits, which effectively means that we need to
+    // "correct" the equation as follows:
+    //
+    // USARTDIV =      (pclk) * 16
+    //            ------------------------
+    //            8 x (2 - OVER8) x (baud)
+    //
+    // When OVER8 is enabled, we can only use the lowest three fractional bits, so we'll need
+    // to shift those last four bits right one bit
+
+    if baud_rate == 0 {
+        Err(ErrorCode::INVAL)
+    } else if (pclk_freq / 16) >= baud_rate {
+        // We have the ability to oversample to 16 bits, take advantage of it.
+        //
+        // We also add `baud / 2` to the `pclk_freq` to ensure rounding of values to the
+        // closest scale, rather than the floored behavior of normal integer division.
+        let div = (pclk_freq + (baud_rate / 2)) / baud_rate;
+
+        Ok((false, div >> 4, div & 0x0F))
+    } else if (pclk_freq / 8) >= baud_rate {
+        // We are close enough to pclk where we can only
+        // oversample 8.
+
+        // See note above regarding `baud` and rounding.
+        let div = ((pclk_freq * 2) + (baud_rate / 2)) / baud_rate;
+
+        // Ensure the the fractional bits (only 3) are right-aligned.
+        Ok((true, div >> 4, (div & 0x0F) >> 1))
+    } else {
+        Err(ErrorCode::INVAL)
     }
 }
 
@@ -771,3 +776,4 @@ impl ClockInterface for UsartClock<'_> {
         self.0.disable();
     }
 }
+
