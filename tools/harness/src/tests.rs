@@ -13,6 +13,7 @@ const ALL: &[BoardKind] = &[
     BoardKind::NucleoF429zi,
 ];
 const NRF: &[BoardKind] = &[BoardKind::Nrf52840Dk];
+const NUCLEO: &[BoardKind] = &[BoardKind::NucleoF429zi];
 const PHYSICAL: &[BoardKind] = &[BoardKind::Nrf52840Dk, BoardKind::NucleoF429zi];
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -200,6 +201,58 @@ pub const TESTS: &[TestCase] = &[
             expect_state(uart, "whileone", "Stopped(Running)")?;
             console_command(uart, "start whileone")?;
             expect_state(uart, "whileone", "Running")
+        }),
+    },
+    TestCase {
+        // Regression test for https://github.com/tock/tock/pull/5194: the
+        // ARMv7-M HardFault handler must clear the sticky CFSR/HFSR bits it
+        // reports. Otherwise, the bits set by a process fault (here, a stack
+        // overflow) leak into the report of a later kernel HardFault, and a
+        // stale BFSR.STKERR makes the kernel misreport it as a kernel stack
+        // overflow.
+        id: "app_stack_overflow_then_kernel_hardfault",
+        boards: NUCLEO,
+        requires: &[Requirement::Uart],
+        apps: &["tests/mpu/unit/mpu_stack_growth"],
+        body: TestBody::Run(|ctx| {
+            let uart = ctx.uart();
+            uart.wait_for("This test should recursively add stack frames", TIMEOUT)?;
+            uart.wait_for("mpu_stack_growth faulted and was stopped.", TIMEOUT)?;
+
+            // The `hardfault` command executes an undefined instruction in
+            // the kernel, which should only set CFSR.UNDEFINSTR.
+            type_command(uart, "hardfault")?;
+            let report = uart.wait_for("---| Cortex-M Fault Status |---", TIMEOUT)?;
+            if report.contains("kernel stack overflow") {
+                return Err("kernel HardFault was reported as a kernel stack overflow".into());
+            }
+            if !report.contains("Kernel HardFault.") {
+                return Err(format!("no kernel HardFault report in {report:?}"));
+            }
+            let cfsr = report
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("CFSR  0x"))
+                .and_then(|hex| u32::from_str_radix(hex.trim(), 16).ok())
+                .ok_or_else(|| format!("no CFSR in kernel HardFault report {report:?}"))?;
+            const UNDEFINSTR: u32 = 1 << 16;
+            if cfsr != UNDEFINSTR {
+                return Err(format!(
+                    "kernel HardFault CFSR is {cfsr:#010x}, expected only UNDEFINSTR \
+                     ({UNDEFINSTR:#010x}); bits from the process fault leaked"
+                ));
+            }
+
+            // The panic then prints the fault status saved for the process,
+            // which must still describe its stack overflow (a MemManage fault).
+            let process_fault = uart.wait_for("Hard Fault Status Register (HFSR):", TIMEOUT)?;
+            if !process_fault.contains("Data Access Violation")
+                && !process_fault.contains("Memory Management Stacking Fault")
+            {
+                return Err(format!(
+                    "process fault status does not show a MemManage fault: {process_fault:?}"
+                ));
+            }
+            Ok(())
         }),
     },
     TestCase {
@@ -397,11 +450,18 @@ pub const TESTS: &[TestCase] = &[
 ];
 
 fn console_command(uart: &mut dyn Uart, cmd: &str) -> Result<String, String> {
+    type_command(uart, cmd)?;
+    uart.wait_for("tock$ ", TIMEOUT)
+}
+
+/// Types `cmd` into the process console, one byte at a time, without waiting
+/// for it to complete.
+fn type_command(uart: &mut dyn Uart, cmd: &str) -> Result<(), String> {
     for byte in format!("{cmd}\r\n").bytes() {
         uart.write(&[byte])?;
         std::thread::sleep(Duration::from_millis(10));
     }
-    uart.wait_for("tock$ ", TIMEOUT)
+    Ok(())
 }
 
 fn process_row(uart: &mut dyn Uart, name: &str) -> Result<String, String> {
