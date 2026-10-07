@@ -939,10 +939,26 @@ pub trait TORUserPMP<const MAX_REGIONS: usize> {
     /// To disable a region, set its configuration to [`TORUserPMPCFG::OFF`]. In
     /// this case, the start and end addresses are ignored and can be set to
     /// arbitrary values.
+    ///
+    /// The `id` identifies the configuration being applied (see
+    /// [`TORUserPMP::configured_for`]). On success, the implementation records
+    /// it; on failure, it must not report any configuration as applied.
     fn configure_pmp(
         &self,
+        id: NonZeroUsize,
         regions: &[(TORUserPMPCFG, *const u8, *const u8); MAX_REGIONS],
     ) -> Result<(), ()>;
+
+    /// The configuration the user-mode PMP entries currently hold.
+    ///
+    /// Returns the `id` passed to the last successful
+    /// [`TORUserPMP::configure_pmp`], or `None` if the entries may hold
+    /// anything else (nothing configured yet, a failed configuration, or
+    /// entries written through other, implementation-specific means). The
+    /// [`PMPUserMPU`] uses this to skip re-writing an unchanged configuration,
+    /// so an implementation must never report an `id` its entries do not
+    /// hold.
+    fn configured_for(&self) -> Option<NonZeroUsize>;
 
     /// Enable the user-mode memory protection.
     ///
@@ -1028,10 +1044,6 @@ pub struct PMPUserMPU<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'st
     /// Monotonically increasing counter for allocated configurations, used to
     /// assign unique IDs to `PMPUserMPUConfig` instances.
     config_count: Cell<NonZeroUsize>,
-    /// The configuration that the PMP was last configured for. Used (along with
-    /// the `is_dirty` flag) to determine if PMP can skip writing the
-    /// configuration to hardware.
-    last_configured_for: OptionalCell<NonZeroUsize>,
     /// Underlying hardware PMP implementation, exposing a number (up to
     /// `P::MAX_REGIONS`) of memory protection regions with an enforcement
     /// granularity of [`TORUserPMP::GRANULARITY`] bytes.
@@ -1048,7 +1060,6 @@ impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static> PMPUserMPU<
 
         PMPUserMPU {
             config_count: Cell::new(NonZeroUsize::MIN),
-            last_configured_for: OptionalCell::empty(),
             pmp,
         }
     }
@@ -1347,10 +1358,11 @@ unsafe impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static>
     }
 
     unsafe fn configure_mpu(&self, config: &Self::MpuConfig) {
-        if !self.last_configured_for.contains(&config.id) || config.is_dirty.get() {
-            self.pmp.configure_pmp(&config.regions).unwrap();
+        // Skip the write if the entries still hold this configuration. The PMP
+        // implementation tracks that, as other code may write them too.
+        if self.pmp.configured_for() != Some(config.id) || config.is_dirty.get() {
+            self.pmp.configure_pmp(config.id, &config.regions).unwrap();
             config.is_dirty.set(false);
-            self.last_configured_for.set(config.id);
         }
     }
 }
@@ -1358,8 +1370,12 @@ unsafe impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static>
 #[cfg(test)]
 pub mod tor_user_pmp_test {
     use super::{TORUserPMP, TORUserPMPCFG};
+    use core::num::NonZeroUsize;
+    use kernel::utilities::cells::OptionalCell;
 
-    struct MockTORUserPMP;
+    struct MockTORUserPMP {
+        configured_for: OptionalCell<NonZeroUsize>,
+    }
     impl<const MPU_REGIONS: usize> TORUserPMP<MPU_REGIONS> for MockTORUserPMP {
         // Don't require any const-assertions in the MockTORUserPMP.
         const CONST_ASSERT_CHECK: () = ();
@@ -1374,9 +1390,15 @@ pub mod tor_user_pmp_test {
 
         fn configure_pmp(
             &self,
+            id: NonZeroUsize,
             _regions: &[(TORUserPMPCFG, *const u8, *const u8); MPU_REGIONS],
         ) -> Result<(), ()> {
+            self.configured_for.set(id);
             Ok(())
+        }
+
+        fn configured_for(&self) -> Option<NonZeroUsize> {
+            self.configured_for.get()
         }
 
         fn enable_user_pmp(&self) -> Result<(), ()> {
@@ -1396,7 +1418,9 @@ pub mod tor_user_pmp_test {
         use crate::pmp::PMPUserMPU;
         use kernel::platform::mpu::{MPU, Permissions};
 
-        let mpu: PMPUserMPU<8, MockTORUserPMP> = PMPUserMPU::new(MockTORUserPMP);
+        let mpu: PMPUserMPU<8, MockTORUserPMP> = PMPUserMPU::new(MockTORUserPMP {
+            configured_for: OptionalCell::empty(),
+        });
         let mut config = mpu
             .new_config()
             .expect("Failed to allocate the first MPU config");
@@ -1609,6 +1633,8 @@ pub mod simple {
     use super::{OCTETS_PER_PMPCFG_CSR, PmpConfigCSRIter, TORUserPMP, TORUserPMPCFG, pmpcfg_octet};
     use crate::csr;
     use core::fmt;
+    use core::num::NonZeroUsize;
+    use kernel::utilities::cells::OptionalCell;
     use kernel::utilities::registers::LocalRegisterCopy;
 
     /// A "simple" RISC-V PMP implementation.
@@ -1629,7 +1655,10 @@ pub mod simple {
     /// the runtime overhead induced through PMP configuration, at the cost of
     /// having less PMP regions available to use for userspace memory
     /// protection.
-    pub struct SimplePMP<const AVAILABLE_ENTRIES: usize, const GRANULARITY: usize = 4>;
+    pub struct SimplePMP<const AVAILABLE_ENTRIES: usize, const GRANULARITY: usize = 4> {
+        /// See [`TORUserPMP::configured_for`].
+        configured_for: OptionalCell<NonZeroUsize>,
+    }
 
     impl<const AVAILABLE_ENTRIES: usize, const GRANULARITY: usize>
         SimplePMP<AVAILABLE_ENTRIES, GRANULARITY>
@@ -1726,7 +1755,9 @@ pub mod simple {
 
             // Hardware PMP is verified to be in a compatible mode / state, has
             // at least `AVAILABLE_ENTRIES` entries, and matches `GRANULARITY`.
-            Ok(SimplePMP)
+            Ok(SimplePMP {
+                configured_for: OptionalCell::empty(),
+            })
         }
     }
 
@@ -1747,6 +1778,7 @@ pub mod simple {
 
         fn configure_pmp(
             &self,
+            id: NonZeroUsize,
             regions: &[(TORUserPMPCFG, *const u8, *const u8); MPU_REGIONS],
         ) -> Result<(), ()> {
             PmpConfigCSRIter::write_back(
@@ -1803,7 +1835,12 @@ pub mod simple {
                     .map(TORUserPMPCFG::get_reg),
             );
 
+            self.configured_for.set(id);
             Ok(())
+        }
+
+        fn configured_for(&self) -> Option<NonZeroUsize> {
+            self.configured_for.get()
         }
 
         fn enable_user_pmp(&self) -> Result<(), ()> {
@@ -1832,6 +1869,8 @@ pub mod kernel_protection {
     };
     use crate::csr;
     use core::fmt;
+    use core::num::NonZeroUsize;
+    use kernel::utilities::cells::OptionalCell;
     use kernel::utilities::registers::{FieldValue, LocalRegisterCopy};
 
     // ---------- Kernel memory-protection PMP memory region wrapper types -----
@@ -1914,7 +1953,10 @@ pub mod kernel_protection {
     /// through the [`KernelProtectionPMP::CONST_ASSERT_CHECK`] associated
     /// constant, which MUST be evaluated by the consumer of the [`TORUserPMP`]
     /// trait (usually the [`PMPUserMPU`](super::PMPUserMPU) implementation).
-    pub struct KernelProtectionPMP<const AVAILABLE_ENTRIES: usize, const GRANULARITY: usize = 4>;
+    pub struct KernelProtectionPMP<const AVAILABLE_ENTRIES: usize, const GRANULARITY: usize = 4> {
+        /// See [`TORUserPMP::configured_for`].
+        configured_for: OptionalCell<NonZeroUsize>,
+    }
 
     impl<const AVAILABLE_ENTRIES: usize, const GRANULARITY: usize>
         KernelProtectionPMP<AVAILABLE_ENTRIES, GRANULARITY>
@@ -2090,7 +2132,9 @@ pub mod kernel_protection {
             );
 
             // Setup complete
-            Ok(KernelProtectionPMP)
+            Ok(KernelProtectionPMP {
+                configured_for: OptionalCell::empty(),
+            })
         }
     }
 
@@ -2112,6 +2156,7 @@ pub mod kernel_protection {
 
         fn configure_pmp(
             &self,
+            id: NonZeroUsize,
             regions: &[(TORUserPMPCFG, *const u8, *const u8); MPU_REGIONS],
         ) -> Result<(), ()> {
             PmpConfigCSRIter::write_back(
@@ -2148,7 +2193,12 @@ pub mod kernel_protection {
                     .map(TORUserPMPCFG::get_reg),
             );
 
+            self.configured_for.set(id);
             Ok(())
+        }
+
+        fn configured_for(&self) -> Option<NonZeroUsize> {
+            self.configured_for.get()
         }
 
         fn enable_user_pmp(&self) -> Result<(), ()> {
@@ -2182,7 +2232,9 @@ pub mod kernel_protection_mml_epmp {
     use crate::csr;
     use core::cell::Cell;
     use core::fmt;
+    use core::num::NonZeroUsize;
     use kernel::platform::mpu;
+    use kernel::utilities::cells::OptionalCell;
     use kernel::utilities::registers::interfaces::{Readable, Writeable};
     use kernel::utilities::registers::{FieldValue, LocalRegisterCopy};
 
@@ -2282,6 +2334,8 @@ pub mod kernel_protection_mml_epmp {
     > {
         user_pmp_enabled: Cell<bool>,
         shadow_user_pmpcfgs: [Cell<TORUserPMPCFG>; MPU_REGIONS],
+        /// See [`TORUserPMP::configured_for`].
+        configured_for: OptionalCell<NonZeroUsize>,
     }
 
     impl<const AVAILABLE_ENTRIES: usize, const MPU_REGIONS: usize, const GRANULARITY: usize>
@@ -2473,6 +2527,7 @@ pub mod kernel_protection_mml_epmp {
 
             // Setup complete
             Ok(KernelProtectionMMLEPMP {
+                configured_for: OptionalCell::empty(),
                 user_pmp_enabled: Cell::new(false),
                 shadow_user_pmpcfgs: [const { Cell::new(TORUserPMPCFG::OFF) }; MPU_REGIONS],
             })
@@ -2503,8 +2558,12 @@ pub mod kernel_protection_mml_epmp {
         // on RV64I systems, due to the changed pmpcfgX CSR layout.
         fn configure_pmp(
             &self,
+            id: NonZeroUsize,
             regions: &[(TORUserPMPCFG, *const u8, *const u8); MPU_REGIONS],
         ) -> Result<(), ()> {
+            // Whatever happens below, the previous configuration is gone:
+            self.configured_for.clear();
+
             // Configure all of the regions' addresses and store their pmpcfg octets
             // in our shadow storage. If the user PMP is already enabled, we further
             // apply this configuration (set the pmpcfgX CSRs) by running
@@ -2551,7 +2610,12 @@ pub mod kernel_protection_mml_epmp {
                 self.enable_user_pmp()?;
             }
 
+            self.configured_for.set(id);
             Ok(())
+        }
+
+        fn configured_for(&self) -> Option<NonZeroUsize> {
+            self.configured_for.get()
         }
 
         fn enable_user_pmp(&self) -> Result<(), ()> {

@@ -9,7 +9,9 @@
 use core::cell::Cell;
 use core::fmt;
 use core::marker::PhantomData;
+use core::num::NonZeroUsize;
 use kernel::platform::mpu;
+use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::registers::FieldValue;
 use rv32i::csr;
 use rv32i::pmp::{
@@ -427,6 +429,8 @@ pub struct EarlGreyEPMP<const HANDOVER_CONFIG_CHECK: bool, DBG: EPMPDebugConfig>
     // always assume that the debug-port is disabled and we can fit
     // `TOR_USER_REGIONS_DEBUG_DISABLE` user-mode TOR regions.
     shadow_user_pmpcfgs: [Cell<TORUserPMPCFG>; TOR_USER_REGIONS_DEBUG_DISABLE],
+    /// See [`TORUserPMP::configured_for`].
+    configured_for: OptionalCell<NonZeroUsize>,
     _pd: PhantomData<DBG>,
 }
 
@@ -530,6 +534,7 @@ impl<const HANDOVER_CONFIG_CHECK: bool> EarlGreyEPMP<{ HANDOVER_CONFIG_CHECK }, 
             user_pmp_enabled: Cell::new(false),
             shadow_user_pmpcfgs: [const { Cell::new(TORUserPMPCFG::OFF) };
                 TOR_USER_REGIONS_DEBUG_DISABLE],
+            configured_for: OptionalCell::empty(),
             _pd: PhantomData,
         })
     }
@@ -686,6 +691,7 @@ impl<const HANDOVER_CONFIG_CHECK: bool> EarlGreyEPMP<{ HANDOVER_CONFIG_CHECK }, 
             user_pmp_enabled: Cell::new(false),
             shadow_user_pmpcfgs: [const { Cell::new(TORUserPMPCFG::OFF) };
                 TOR_USER_REGIONS_DEBUG_DISABLE],
+            configured_for: OptionalCell::empty(),
             _pd: PhantomData,
         })
     }
@@ -859,6 +865,7 @@ impl<const HANDOVER_CONFIG_CHECK: bool> EarlGreyEPMP<{ HANDOVER_CONFIG_CHECK }, 
             user_pmp_enabled: Cell::new(false),
             shadow_user_pmpcfgs: [const { Cell::new(TORUserPMPCFG::OFF) };
                 TOR_USER_REGIONS_DEBUG_DISABLE],
+            configured_for: OptionalCell::empty(),
             _pd: PhantomData,
         };
 
@@ -932,8 +939,12 @@ impl<const HANDOVER_CONFIG_CHECK: bool, DBG: EPMPDebugConfig>
 
     fn user_configure_pmp<const TOR_USER_REGIONS: usize>(
         &self,
+        id: NonZeroUsize,
         regions: &[(TORUserPMPCFG, *const u8, *const u8); TOR_USER_REGIONS],
     ) -> Result<(), ()> {
+        // Whatever happens below, the previous configuration is gone:
+        self.configured_for.clear();
+
         // Configure all of the regions' addresses and store their pmpcfg octets
         // in our shadow storage. If the user PMP is already enabled, we further
         // apply this configuration (set the pmpcfgX CSRs) by running
@@ -980,6 +991,7 @@ impl<const HANDOVER_CONFIG_CHECK: bool, DBG: EPMPDebugConfig>
             self.user_enable_user_pmp()?;
         }
 
+        self.configured_for.set(id);
         Ok(())
     }
 
@@ -1145,9 +1157,14 @@ impl<const HANDOVER_CONFIG_CHECK: bool> TORUserPMP<{ TOR_USER_REGIONS_DEBUG_ENAB
 
     fn configure_pmp(
         &self,
+        id: NonZeroUsize,
         regions: &[(TORUserPMPCFG, *const u8, *const u8); TOR_USER_REGIONS_DEBUG_ENABLE],
     ) -> Result<(), ()> {
-        self.user_configure_pmp::<TOR_USER_REGIONS_DEBUG_ENABLE>(regions)
+        self.user_configure_pmp::<TOR_USER_REGIONS_DEBUG_ENABLE>(id, regions)
+    }
+
+    fn configured_for(&self) -> Option<NonZeroUsize> {
+        self.configured_for.get()
     }
 
     fn enable_user_pmp(&self) -> Result<(), ()> {
@@ -1175,9 +1192,14 @@ impl<const HANDOVER_CONFIG_CHECK: bool> TORUserPMP<{ TOR_USER_REGIONS_DEBUG_DISA
 
     fn configure_pmp(
         &self,
+        id: NonZeroUsize,
         regions: &[(TORUserPMPCFG, *const u8, *const u8); TOR_USER_REGIONS_DEBUG_DISABLE],
     ) -> Result<(), ()> {
-        self.user_configure_pmp::<TOR_USER_REGIONS_DEBUG_DISABLE>(regions)
+        self.user_configure_pmp::<TOR_USER_REGIONS_DEBUG_DISABLE>(id, regions)
+    }
+
+    fn configured_for(&self) -> Option<NonZeroUsize> {
+        self.configured_for.get()
     }
 
     fn enable_user_pmp(&self) -> Result<(), ()> {
