@@ -266,6 +266,70 @@ impl From<mpu::Permissions> for TORUserPMPCFG {
     }
 }
 
+/// A single, non-locked PMP entry for user-mode memory protection: its
+/// `pmpcfg` octet and `pmpaddr` value.
+///
+/// Unlike [`TORUserPMPCFG`] regions, which a [`TORUserPMP`] maps to pairs of
+/// entries, these describe hardware entries one to one, so they can express
+/// NAPOT regions and TOR regions that share their boundary entries. The
+/// constructors guarantee that the lock (`L`) bit is never set, so these
+/// entries can never restrict machine mode.
+///
+/// PMP entries are matched in order, lowest index first.
+#[derive(Copy, Clone, Debug)]
+pub struct UserPMPEntry {
+    cfg: LocalRegisterCopy<u8, pmpcfg_octet::Register>,
+    pmpaddr: usize,
+}
+
+impl UserPMPEntry {
+    /// An entry that is disabled and does not provide a TOR bound.
+    pub const OFF: UserPMPEntry = UserPMPEntry {
+        cfg: LocalRegisterCopy::new(0),
+        pmpaddr: 0,
+    };
+
+    /// A disabled entry whose address is the (inclusive) start of a TOR
+    /// region in the next entry.
+    pub fn tor_start(start: *const u8) -> Self {
+        UserPMPEntry {
+            cfg: LocalRegisterCopy::new(0),
+            pmpaddr: start.addr().overflowing_shr(2).0,
+        }
+    }
+
+    /// A TOR region from the previous entry's address (inclusive; address 0
+    /// for entry 0) to `end` (exclusive). Both bounds round down to 4 bytes.
+    pub fn tor(end: *const u8, permissions: mpu::Permissions) -> Self {
+        UserPMPEntry {
+            cfg: TORUserPMPCFG::from(permissions).get_reg(),
+            pmpaddr: end.addr().overflowing_shr(2).0,
+        }
+    }
+
+    /// A NAPOT region of `size` bytes at `start`, or `None` if `size` is not
+    /// a power of two of at least 8 bytes, or `start` is not aligned to it.
+    pub fn napot(start: *const u8, size: usize, permissions: mpu::Permissions) -> Option<Self> {
+        let spec = NAPOTRegionSpec::from_start_size(start, size)?;
+        let mut cfg = TORUserPMPCFG::from(permissions).get_reg();
+        cfg.modify(pmpcfg_octet::a::NAPOT);
+        Some(UserPMPEntry {
+            cfg,
+            pmpaddr: spec.pmpaddr(),
+        })
+    }
+
+    /// The entry's `pmpcfg` octet.
+    pub fn pmpcfg(&self) -> u8 {
+        self.cfg.get()
+    }
+
+    /// The entry's `pmpaddr` CSR value.
+    pub fn pmpaddr(&self) -> usize {
+        self.pmpaddr
+    }
+}
+
 /// A RISC-V PMP memory region specification, configured in NAPOT mode.
 ///
 /// This type checks that the supplied `start` and `size` values meet the RISC-V
@@ -1408,6 +1472,39 @@ pub mod tor_user_pmp_test {
         fn disable_user_pmp(&self) {}
     }
 
+    #[test]
+    fn test_user_pmp_entry_encoding() {
+        use crate::pmp::UserPMPEntry;
+        use kernel::platform::mpu::Permissions;
+
+        // NAPOT, 64 KiB at 0x3FCD0000, RW: A = NAPOT, R, W.
+        let e = UserPMPEntry::napot(
+            0x3FCD_0000 as *const u8,
+            0x1_0000,
+            Permissions::ReadWriteOnly,
+        )
+        .unwrap();
+        assert_eq!(e.pmpcfg(), 0x1B);
+        assert_eq!(e.pmpaddr(), (0x3FCD_0000 + 0x7FFF) >> 2);
+
+        // Misaligned or non-power-of-two NAPOT regions are rejected.
+        assert!(
+            UserPMPEntry::napot(0x3FCD_1000 as *const u8, 0x1_0000, Permissions::ReadOnly)
+                .is_none()
+        );
+        assert!(
+            UserPMPEntry::napot(0x3FCD_0000 as *const u8, 0x3000, Permissions::ReadOnly).is_none()
+        );
+
+        // TOR: A = TOR, R, X; the start entry is OFF.
+        let e = UserPMPEntry::tor(0x4038_8000 as *const u8, Permissions::ReadExecuteOnly);
+        assert_eq!(e.pmpcfg(), 0x0D);
+        assert_eq!(e.pmpaddr(), 0x4038_8000 >> 2);
+        let s = UserPMPEntry::tor_start(0x3FF0_0000 as *const u8);
+        assert_eq!(s.pmpcfg(), 0);
+        assert_eq!(s.pmpaddr(), 0x3FF0_0000 >> 2);
+    }
+
     // TODO: implement more test cases, such as:
     //
     // - Try to update the app memory break with an invalid pointer below its
@@ -1630,7 +1727,10 @@ pub mod tor_user_pmp_test {
 }
 
 pub mod simple {
-    use super::{OCTETS_PER_PMPCFG_CSR, PmpConfigCSRIter, TORUserPMP, TORUserPMPCFG, pmpcfg_octet};
+    use super::{
+        OCTETS_PER_PMPCFG_CSR, PmpConfigCSRIter, TORUserPMP, TORUserPMPCFG, UserPMPEntry,
+        pmpcfg_octet,
+    };
     use crate::csr;
     use core::fmt;
     use core::num::NonZeroUsize;
@@ -1758,6 +1858,51 @@ pub mod simple {
             Ok(SimplePMP {
                 configured_for: OptionalCell::empty(),
             })
+        }
+
+        /// Write `entries` to the PMP entries `0..entries.len()` as given, and
+        /// turn off the remaining entries up to `AVAILABLE_ENTRIES`.
+        ///
+        /// This bypasses the [`TORUserPMP`] region abstraction for code that
+        /// needs a specific entry layout (NAPOT entries, shared TOR bounds,
+        /// prioritized overlaps). The entries are never locked, so they only
+        /// restrict user mode. Afterwards, [`TORUserPMP::configured_for`]
+        /// reports no configuration, so the [`super::PMPUserMPU`] rewrites the
+        /// entries before the next process runs.
+        ///
+        /// Returns `Err(())`, without changing any entry, if there are more
+        /// than `AVAILABLE_ENTRIES` entries.
+        ///
+        /// ### Safety
+        ///
+        /// The entries grant user mode access to memory. The caller must
+        /// ensure that whatever user-mode code runs before the next call to
+        /// [`TORUserPMP::configure_pmp`] may access all memory these entries
+        /// allow.
+        pub unsafe fn configure_raw(&self, entries: &[UserPMPEntry]) -> Result<(), ()> {
+            if entries.len() > AVAILABLE_ENTRIES {
+                return Err(());
+            }
+
+            // From here on, the entries do not hold any `TORUserPMP`
+            // configuration:
+            self.configured_for.clear();
+
+            for (i, entry) in entries.iter().enumerate() {
+                csr::CSR.pmpaddr_set(i, entry.pmpaddr());
+            }
+            PmpConfigCSRIter::write_back(
+                0,
+                entries
+                    .iter()
+                    .map(|entry| entry.cfg)
+                    .chain(core::iter::repeat_n(
+                        LocalRegisterCopy::new(0),
+                        AVAILABLE_ENTRIES - entries.len(),
+                    )),
+            );
+
+            Ok(())
         }
     }
 
