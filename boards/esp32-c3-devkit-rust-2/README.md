@@ -13,25 +13,18 @@ The ESP32-C3-DevKit-RUST-2 board uses the ESP32-C3-MINI-1 module and includes:
 
 ## Setup
 
-Install the ESP tool:
+Tock uses [Tockloader](https://github.com/tock/tockloader) to write the kernel
+and apps to the board. Tockloader talks to the ROM serial bootloader of the
+ESP32-C3 through [esptool](https://github.com/espressif/esptool), version 5.0
+or newer:
 
 ```shell
-# macOS
-brew install esptool
-```
-
-of from source:
-
-```shell
-git clone https://github.com/espressif/esptool.git
-cd esptool
-pip install --user -e .
+pip install --user tockloader esptool
 ```
 
 To install the Tock kernel:
 
 ```shell
-make init
 make install
 ```
 
@@ -101,16 +94,11 @@ $ cd libtock-c/examples/<app>
 $ make
 ```
 
-To "flash" an app, we first write it to a binary file that is combined with the
-kernel which we will write in its entirety to the board.
+Then install the app with Tockloader:
 
 ```bash
-$ tockloader install --local-board
+$ tockloader install
 ```
 
-Then to flash the kernel with the app:
-
-```
-$ cd tock/boards/esp32-c3-devkit-rust-2
-$ make install
-```
+Tockloader writes the app to flash without changing the kernel, so the kernel
+and apps can be installed in any order.

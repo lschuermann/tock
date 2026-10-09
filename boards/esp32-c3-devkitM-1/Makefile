@@ -6,29 +6,17 @@
 
 RISC_PREFIX = riscv64-linux-gnu
 
-# Newer esptool releases install the `esptool` command, older releases install
-# `esptool.py`. Use whichever is installed, preferring `esptool`.
-ESPTOOL ?= $(or $(shell command -v esptool 2>/dev/null),esptool.py)
-
 include ../Makefile.common
 
 # Default target for installing the kernel.
 .PHONY: install
 install: flash
 
-.PHONY: init
-init:
-	tockloader local-board set esp32_c3_devkitm1 --binary-path esp32_c3_devkitm1.bin --arch rv32imc --app-address 0x42100000 --flash-address 0x42000000
-
-# Write the kernel to the flash file with tockloader
-.PHONY: write-kernel
-write-kernel: $(TARGET_PATH)/release/$(PLATFORM).bin
-	tockloader flash --local-board --address 0x42000000 $<
-
-esp32_c3_devkitm1.bin: write-kernel
-
-flash: esp32_c3_devkitm1.bin
-	$(ESPTOOL) --chip esp32c3 write_flash 0x0 esp32_c3_devkitm1.bin
+# Write the kernel to the board with tockloader, which uses esptool to talk to
+# the ROM serial bootloader of the ESP32-C3.
+.PHONY: flash
+flash: $(TARGET_PATH)/release/$(PLATFORM).bin
+	tockloader flash --esptool --address 0x42000000 $<
 
 test:
 	$(Q)$(CARGO) test $(NO_RUN) --bin $(PLATFORM) --release

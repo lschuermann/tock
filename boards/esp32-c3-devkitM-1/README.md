@@ -14,32 +14,25 @@ compact design, security, high performance, and reliability.
 
 ## Setup
 
-Install the ESP tool:
+Tock uses [Tockloader](https://github.com/tock/tockloader) to write the kernel
+and apps to the board. Tockloader talks to the ROM serial bootloader of the
+ESP32-C3 through [esptool](https://github.com/espressif/esptool), version 5.0
+or newer:
 
 ```shell
-# macOS
-brew install esptool
-```
-
-of from source:
-
-```shell
-git clone https://github.com/espressif/esptool.git
-cd esptool
-pip install --user -e .
+pip install --user tockloader esptool
 ```
 
 The first time you are installing Tock you probably want to erase the
 flash first. This can be done with:
 
 ```shell
-esptool.py --chip esp32c3 erase_flash
+esptool --chip esp32c3 erase-flash
 ```
 
 After that you can run:
 
 ```shell
-make init
 make flash
 ```
 
@@ -112,19 +105,14 @@ $ cd libtock-c/examples/<app>
 $ make
 ```
 
-To "flash" an app, we first write it to a binary file that is combined with the
-kernel which we will write in its entirety to the board.
+Then install the app with Tockloader:
 
 ```bash
-$ tockloader install --local-board
+$ tockloader install
 ```
 
-Then to flash the kernel with the app:
-
-```
-$ cd tock/boards/esp32-c3-devkitM-1
-$ make flash
-```
+Tockloader writes the app to flash without changing the kernel, so the kernel
+and apps can be installed in any order.
 
 ## JTAG Debugging
 
