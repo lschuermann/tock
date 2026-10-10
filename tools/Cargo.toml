@@ -10,6 +10,7 @@ members = [
     "ci/qemu-runner",
     "ci/qemu-virt-ci-runner",
     "build/sha256sum",
+    "build/ble-omniglot-bindgen",
     "debugging-and-development/alert_codes",
     "debugging-and-development/usb/bulk-echo",
     "debugging-and-development/usb/bulk-test",

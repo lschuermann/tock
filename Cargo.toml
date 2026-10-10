@@ -98,6 +98,7 @@ members = [
     "chips/earlgrey",
     "chips/esp32",
     "chips/esp32-c3",
+    "chips/esp32-c3-ble-omniglot",
     "chips/imxrt10xx",
     "chips/lpc55s6x",
     "chips/litex",

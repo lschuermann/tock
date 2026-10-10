@@ -1,0 +1,25 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2026.
+
+[package]
+name = "esp32-c3-ble-omniglot"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+esp32-c3 = { path = "../esp32-c3" }
+kernel = { path = "../../kernel" }
+rv32i = { path = "../../arch/rv32i" }
+
+omniglot = { git = "https://github.com/omniglot-rs/omniglot", rev = "a9cda47f9c0f8ce943fef63b139dcf960687a1a2" }
+omniglot-tock = { path = "../../libraries/omniglot-tock" }
+
+# Espressif's BLE controller archives and the mask ROM's linker scripts. Not
+# used from Rust: `sandbox.mk` finds them through `cargo metadata` and links
+# them into the sandbox.
+tock-firmware-esp32c3-bt = { git = "https://github.com/lschuermann/tock-firmware", branch = "dev/esp32-c3-bt" }
+
+[lints]
+workspace = true
