@@ -1,0 +1,19 @@
+wrapper_name = "Sandbox"
+
+[functions.sandbox_start]
+fntab_id = 0
+
+[functions.sandbox_run]
+fntab_id = 1
+
+[functions.sandbox_isr]
+fntab_id = 2
+
+[functions.sandbox_hci_send]
+fntab_id = 3
+
+[functions.sandbox_hci_recv]
+fntab_id = 4
+
+[functions.sandbox_log]
+fntab_id = 5
