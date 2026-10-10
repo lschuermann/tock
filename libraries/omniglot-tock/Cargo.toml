@@ -1,0 +1,17 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2026.
+
+# Vendored from https://github.com/omniglot-rs/omniglot-tock
+# (rev c3bc0564ac15c416b757d76aebce374348973df7), adapted to this tree.
+
+[package]
+name = "omniglot-tock"
+version.workspace = true
+authors = ["Leon Schuermann <leon@is.currently.online>"]
+edition.workspace = true
+
+[dependencies]
+omniglot = { git = "https://github.com/omniglot-rs/omniglot", rev = "a9cda47f9c0f8ce943fef63b139dcf960687a1a2" }
+kernel = { path = "../../kernel" }
+rv32i = { path = "../../arch/rv32i" }

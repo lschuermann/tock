@@ -143,6 +143,7 @@ members = [
     "libraries/riscv-csr",
     "libraries/tock-cells",
     "libraries/tickv",
+    "libraries/omniglot-tock",
 ]
 exclude = ["tools/"]
 resolver = "2"
