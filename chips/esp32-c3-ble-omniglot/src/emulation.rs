@@ -50,7 +50,7 @@ use kernel::utilities::registers::{
 
 use omniglot_tock::rv32i_c_rt::AccessEmulation;
 
-use super::{BT_SOURCES, IRAM_DBUS_OFFSET};
+use super::{BT_SOURCES, IRAM_DBUS_OFFSET, instrumentation};
 
 /// Peripheral ranges (start, end) whose accesses are emulated.
 ///
@@ -238,7 +238,7 @@ impl Emulation {
             && BT_SOURCES.iter().any(|&src| {
                 addr == INTMATRIX_BASE + 4 * src as usize && store.is_none_or(|v| v == src as usize)
             });
-        listed || intmatrix
+        listed || intmatrix || instrumentation::discover(addr)
     }
 
     /// Whether to perform a 4-byte store of `value` to `addr`, one of the EM
@@ -307,7 +307,9 @@ impl AccessEmulation for Emulation {
         } else {
             self.allow_mmio(addr, width, store)
         };
-        if !allowed {
+        if allowed {
+            instrumentation::count_emulated(addr, store.is_some());
+        } else {
             self.refused.set(Some((addr, store)));
         }
         allowed

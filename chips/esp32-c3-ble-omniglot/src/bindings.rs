@@ -76,22 +76,46 @@ pub trait Sandbox<
         >,
         access_scope: &mut ::omniglot::markers::AccessScope<ID>,
     ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>>;
+    fn sandbox_stat(
+        &self,
+        which: u32,
+        alloc_scope: &mut ::omniglot::markers::AllocScope<
+            '_,
+            <Self::RT as ::omniglot::rt::OGRuntime>::AllocTracker<'_>,
+            ID,
+        >,
+        access_scope: &mut ::omniglot::markers::AccessScope<ID>,
+    ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>>;
+    fn sandbox_test(
+        &self,
+        kind: u32,
+        alloc_scope: &mut ::omniglot::markers::AllocScope<
+            '_,
+            <Self::RT as ::omniglot::rt::OGRuntime>::AllocTracker<'_>,
+            ID,
+        >,
+        access_scope: &mut ::omniglot::markers::AccessScope<ID>,
+    ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>>;
 }
-pub const SandboxFntab: [&'static ::core::ffi::CStr; 6usize] = [
-    c"sandbox_log",
+pub const SandboxFntab: [&'static ::core::ffi::CStr; 8usize] = [
     c"sandbox_run",
-    c"sandbox_start",
+    c"sandbox_log",
     c"sandbox_hci_send",
-    c"sandbox_hci_recv",
     c"sandbox_isr",
+    c"sandbox_hci_recv",
+    c"sandbox_stat",
+    c"sandbox_test",
+    c"sandbox_start",
 ];
-pub const SandboxFixedFntab: [Option<&'static ::core::ffi::CStr>; 6usize] = [
+pub const SandboxFixedFntab: [Option<&'static ::core::ffi::CStr>; 8usize] = [
     Some(c"sandbox_start"),
     Some(c"sandbox_run"),
     Some(c"sandbox_isr"),
     Some(c"sandbox_hci_send"),
     Some(c"sandbox_hci_recv"),
     Some(c"sandbox_log"),
+    Some(c"sandbox_stat"),
+    Some(c"sandbox_test"),
 ];
 pub struct SandboxRt<
     ID: ::omniglot::id::OGID,
@@ -99,7 +123,7 @@ pub struct SandboxRt<
     BorrowRT: ::core::borrow::Borrow<RT>,
 > {
     rt: BorrowRT,
-    symbols: RT::SymbolTableState<6usize, 6usize>,
+    symbols: RT::SymbolTableState<8usize, 8usize>,
     _id: ::core::marker::PhantomData<ID>,
 }
 impl<ID: ::omniglot::id::OGID, RT: ::omniglot::rt::OGRuntime, BorrowRT: ::core::borrow::Borrow<RT>>
@@ -143,6 +167,12 @@ trait SandboxRv32iCRt:
     > + ::omniglot::rt::rv32i_c::Rv32iCRt<
         0usize,
         ::omniglot::abi::calling_convention::AREG2<::omniglot::abi::rv32i_c::Rv32iCABI>,
+    > + ::omniglot::rt::rv32i_c::Rv32iCRt<
+        0usize,
+        ::omniglot::abi::calling_convention::AREG1<::omniglot::abi::rv32i_c::Rv32iCABI>,
+    > + ::omniglot::rt::rv32i_c::Rv32iCRt<
+        0usize,
+        ::omniglot::abi::calling_convention::AREG1<::omniglot::abi::rv32i_c::Rv32iCABI>,
     >
 {
 }
@@ -166,6 +196,12 @@ impl<
         > + ::omniglot::rt::rv32i_c::Rv32iCRt<
             0usize,
             ::omniglot::abi::calling_convention::AREG2<::omniglot::abi::rv32i_c::Rv32iCABI>,
+        > + ::omniglot::rt::rv32i_c::Rv32iCRt<
+            0usize,
+            ::omniglot::abi::calling_convention::AREG1<::omniglot::abi::rv32i_c::Rv32iCABI>,
+        > + ::omniglot::rt::rv32i_c::Rv32iCRt<
+            0usize,
+            ::omniglot::abi::calling_convention::AREG1<::omniglot::abi::rv32i_c::Rv32iCABI>,
         >,
 > SandboxRv32iCRt for RT
 {
@@ -202,7 +238,7 @@ impl<ID: ::omniglot::id::OGID, RT: SandboxRv32iCRt<ID = ID>, BorrowRT: ::core::b
         }
         let ef_sym = self
             .rt()
-            .lookup_symbol(2usize, 0usize, &self.symbols)
+            .lookup_symbol(7usize, 0usize, &self.symbols)
             .unwrap();
         let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < u32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , u32 > > :: new () ;
         let ef_res_borrowed = &mut ef_res;
@@ -240,7 +276,7 @@ impl<ID: ::omniglot::id::OGID, RT: SandboxRv32iCRt<ID = ID>, BorrowRT: ::core::b
         }
         let ef_sym = self
             .rt()
-            .lookup_symbol(1usize, 1usize, &self.symbols)
+            .lookup_symbol(0usize, 1usize, &self.symbols)
             .unwrap();
         let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < u32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , u32 > > :: new () ;
         let ef_res_borrowed = &mut ef_res;
@@ -280,7 +316,7 @@ impl<ID: ::omniglot::id::OGID, RT: SandboxRv32iCRt<ID = ID>, BorrowRT: ::core::b
         }
         let ef_sym = self
             .rt()
-            .lookup_symbol(5usize, 2usize, &self.symbols)
+            .lookup_symbol(3usize, 2usize, &self.symbols)
             .unwrap();
         let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < u32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , u32 > > :: new () ;
         let ef_res_borrowed = &mut ef_res;
@@ -322,7 +358,7 @@ impl<ID: ::omniglot::id::OGID, RT: SandboxRv32iCRt<ID = ID>, BorrowRT: ::core::b
         }
         let ef_sym = self
             .rt()
-            .lookup_symbol(3usize, 3usize, &self.symbols)
+            .lookup_symbol(2usize, 3usize, &self.symbols)
             .unwrap();
         let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < i32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , i32 > > :: new () ;
         let ef_res_borrowed = &mut ef_res;
@@ -406,13 +442,93 @@ impl<ID: ::omniglot::id::OGID, RT: SandboxRv32iCRt<ID = ID>, BorrowRT: ::core::b
         }
         let ef_sym = self
             .rt()
-            .lookup_symbol(0usize, 5usize, &self.symbols)
+            .lookup_symbol(1usize, 5usize, &self.symbols)
             .unwrap();
         let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < u32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , u32 > > :: new () ;
         let ef_res_borrowed = &mut ef_res;
         self.rt()
             .execute(ef_sym, alloc_scope, access_scope, move || unsafe {
                 sandbox_log_int::<RT>(buf, cap, self.rt(), ef_sym, ef_res_borrowed);
+            });
+        ::omniglot::rt::rv32i_c::Rv32iCInvokeRes::<RT, u32>::into_result_registers(
+            ef_res,
+            self.rt(),
+        )
+    }
+    #[inline]
+    fn sandbox_stat(
+        &self,
+        which: u32,
+        alloc_scope: &mut ::omniglot::markers::AllocScope<
+            '_,
+            <Self::RT as ::omniglot::rt::OGRuntime>::AllocTracker<'_>,
+            ID,
+        >,
+        access_scope: &mut ::omniglot::markers::AccessScope<ID>,
+    ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>> {
+        #[unsafe(naked)]
+        unsafe extern "C" fn sandbox_stat_int<
+            RT: ::omniglot::rt::rv32i_c::Rv32iCRt<
+                    0usize,
+                    ::omniglot::abi::calling_convention::AREG1<::omniglot::abi::rv32i_c::Rv32iCABI>,
+                >,
+        >(
+            which: u32,
+            _rt: &RT,
+            _fnptr: *const (),
+            _resptr: &mut RT::InvokeRes<u32>,
+        ) {
+            core :: arch :: naked_asm ! ("la t0, {invoke}" , "jr t0" , invoke = sym RT :: invoke ,);
+        }
+        let ef_sym = self
+            .rt()
+            .lookup_symbol(5usize, 6usize, &self.symbols)
+            .unwrap();
+        let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < u32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , u32 > > :: new () ;
+        let ef_res_borrowed = &mut ef_res;
+        self.rt()
+            .execute(ef_sym, alloc_scope, access_scope, move || unsafe {
+                sandbox_stat_int::<RT>(which, self.rt(), ef_sym, ef_res_borrowed);
+            });
+        ::omniglot::rt::rv32i_c::Rv32iCInvokeRes::<RT, u32>::into_result_registers(
+            ef_res,
+            self.rt(),
+        )
+    }
+    #[inline]
+    fn sandbox_test(
+        &self,
+        kind: u32,
+        alloc_scope: &mut ::omniglot::markers::AllocScope<
+            '_,
+            <Self::RT as ::omniglot::rt::OGRuntime>::AllocTracker<'_>,
+            ID,
+        >,
+        access_scope: &mut ::omniglot::markers::AccessScope<ID>,
+    ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>> {
+        #[unsafe(naked)]
+        unsafe extern "C" fn sandbox_test_int<
+            RT: ::omniglot::rt::rv32i_c::Rv32iCRt<
+                    0usize,
+                    ::omniglot::abi::calling_convention::AREG1<::omniglot::abi::rv32i_c::Rv32iCABI>,
+                >,
+        >(
+            kind: u32,
+            _rt: &RT,
+            _fnptr: *const (),
+            _resptr: &mut RT::InvokeRes<u32>,
+        ) {
+            core :: arch :: naked_asm ! ("la t0, {invoke}" , "jr t0" , invoke = sym RT :: invoke ,);
+        }
+        let ef_sym = self
+            .rt()
+            .lookup_symbol(6usize, 7usize, &self.symbols)
+            .unwrap();
+        let mut ef_res = < < RT as :: omniglot :: rt :: rv32i_c :: Rv32iCBaseRt > :: InvokeRes < u32 > as :: omniglot :: rt :: rv32i_c :: Rv32iCInvokeRes < RT , u32 > > :: new () ;
+        let ef_res_borrowed = &mut ef_res;
+        self.rt()
+            .execute(ef_sym, alloc_scope, access_scope, move || unsafe {
+                sandbox_test_int::<RT>(kind, self.rt(), ef_sym, ef_res_borrowed);
             });
         ::omniglot::rt::rv32i_c::Rv32iCInvokeRes::<RT, u32>::into_result_registers(
             ef_res,
@@ -516,6 +632,34 @@ impl<
             self::sandbox_log(buf, cap)
         }))
     }
+    fn sandbox_stat(
+        &self,
+        which: u32,
+        _alloc_scope: &mut ::omniglot::markers::AllocScope<
+            '_,
+            <Self::RT as ::omniglot::rt::OGRuntime>::AllocTracker<'_>,
+            ID,
+        >,
+        _access_scope: &mut ::omniglot::markers::AccessScope<ID>,
+    ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>> {
+        ::omniglot::OGResult::Ok(::omniglot::foreign_memory::og_copy::OGCopy::new(unsafe {
+            self::sandbox_stat(which)
+        }))
+    }
+    fn sandbox_test(
+        &self,
+        kind: u32,
+        _alloc_scope: &mut ::omniglot::markers::AllocScope<
+            '_,
+            <Self::RT as ::omniglot::rt::OGRuntime>::AllocTracker<'_>,
+            ID,
+        >,
+        _access_scope: &mut ::omniglot::markers::AccessScope<ID>,
+    ) -> ::omniglot::OGResult<::omniglot::foreign_memory::og_copy::OGCopy<u32>> {
+        ::omniglot::OGResult::Ok(::omniglot::foreign_memory::og_copy::OGCopy::new(unsafe {
+            self::sandbox_test(kind)
+        }))
+    }
 }
 pub const SANDBOX_STARTED: u32 = 1;
 pub const SANDBOX_FAILED: u32 = 2;
@@ -527,6 +671,19 @@ pub const SANDBOX_TX_READY: u32 = 64;
 pub const SANDBOX_ERR_OFF: i32 = -1;
 pub const SANDBOX_ERR_BUSY: i32 = -2;
 pub const SANDBOX_ERR_SIZE: i32 = -3;
+pub const SANDBOX_STAT_HEAP_USED: u32 = 0;
+pub const SANDBOX_STAT_HEAP_PEAK: u32 = 1;
+pub const SANDBOX_STAT_TASK_STACK: u32 = 2;
+pub const SANDBOX_STAT_CONTROLLER_STACK: u32 = 3;
+pub const SANDBOX_STAT_RX_DROPS: u32 = 4;
+pub const SANDBOX_STAT_LOG_DROPS: u32 = 5;
+pub const SANDBOX_TEST_LOAD_KERNEL: u32 = 1;
+pub const SANDBOX_TEST_STORE_EM: u32 = 2;
+pub const SANDBOX_TEST_STORE_SPI1: u32 = 3;
+pub const SANDBOX_TEST_STORE_CODE: u32 = 4;
+pub const SANDBOX_TEST_JUMP: u32 = 6;
+pub const SANDBOX_TEST_EBREAK: u32 = 7;
+pub const SANDBOX_TEST_STORE_KERNEL_IRAM: u32 = 8;
 extern "C" {
     pub fn sandbox_start() -> u32;
 }
@@ -544,4 +701,10 @@ extern "C" {
 }
 extern "C" {
     pub fn sandbox_log(buf: *mut u8, cap: u32) -> u32;
+}
+extern "C" {
+    pub fn sandbox_stat(which: u32) -> u32;
+}
+extern "C" {
+    pub fn sandbox_test(kind: u32) -> u32;
 }

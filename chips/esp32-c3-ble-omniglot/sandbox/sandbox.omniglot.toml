@@ -17,3 +17,9 @@ fntab_id = 4
 
 [functions.sandbox_log]
 fntab_id = 5
+
+[functions.sandbox_stat]
+fntab_id = 6
+
+[functions.sandbox_test]
+fntab_id = 7

@@ -34,9 +34,11 @@ struct ring {
   uint32_t size;
   uint32_t head;
   uint32_t len;
+  // Debug: bytes or packets that did not fit.
+  uint32_t drops;
 };
 
-#define RING(storage) {(storage), sizeof(storage), 0, 0}
+#define RING(storage) {(storage), sizeof(storage), 0, 0, 0}
 
 static inline uint32_t ring_space(const struct ring* r) {
   return r->size - r->len;
@@ -86,6 +88,9 @@ void base_mac(uint8_t mac[6]);
 // Run the handler the controller registered for interrupt `source`.
 void osi_isr(uint32_t source);
 
+// Debug: heap use in bytes.
+extern uint32_t heap_used, heap_peak;
+
 // ---------------------------------------------------------------------------
 // threads.c
 
@@ -98,6 +103,8 @@ struct thread {
   int64_t deadline;
   void (*entry)(void*);
   void* arg;
+  uint32_t* stack;
+  uint32_t stack_words;
 };
 
 // Start a thread that runs `entry(arg)` on `stack`. `stack_size` is in bytes
@@ -127,6 +134,9 @@ bool threads_runnable(void);
 
 // Whether a thread waits with a deadline.
 bool threads_waiting_with_deadline(void);
+
+// Debug: the high-water mark of `t`'s stack, in bytes.
+uint32_t thread_stack_used(const struct thread* t);
 
 // ---------------------------------------------------------------------------
 // controller.c

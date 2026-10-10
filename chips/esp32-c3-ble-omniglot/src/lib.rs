@@ -66,6 +66,7 @@ use rv32i::pmp::{TORUserPMP, UserPMPEntry};
 )]
 mod bindings;
 mod emulation;
+mod instrumentation;
 
 use bindings::{self as b, Sandbox as _};
 pub use emulation::Emulation;
@@ -382,9 +383,23 @@ enum Call {
     Send,
     Recv,
     Log,
+    Stat,
+    Test,
 }
 
 impl Call {
+    const COUNT: usize = 8;
+    const ALL: [Call; Call::COUNT] = [
+        Call::Start,
+        Call::Run,
+        Call::Isr,
+        Call::Send,
+        Call::Recv,
+        Call::Log,
+        Call::Stat,
+        Call::Test,
+    ];
+
     fn name(self) -> &'static str {
         match self {
             Call::Start => "start",
@@ -393,6 +408,8 @@ impl Call {
             Call::Send => "send",
             Call::Recv => "recv",
             Call::Log => "log",
+            Call::Stat => "stat",
+            Call::Test => "test",
         }
     }
 }
@@ -457,6 +474,8 @@ pub struct BleOmniglot {
     ran: Cell<bool>,
     /// A bring-up has started before. `rom_ram` holds the snapshot.
     started_once: Cell<bool>,
+    /// How long the last bring-up took, in microseconds.
+    start_us: Cell<u64>,
     /// The result for `reset_done`, once due.
     reset_result: OptionalCell<Result<(), ErrorCode>>,
     /// `stopped` is due to the client.
@@ -521,6 +540,7 @@ impl BleOmniglot {
             failing: Cell::new(false),
             ran: Cell::new(false),
             started_once: Cell::new(false),
+            start_us: Cell::new(0),
             reset_result: OptionalCell::empty(),
             stopped_pending: Cell::new(false),
             receiving: Cell::new(false),
@@ -546,7 +566,9 @@ impl BleOmniglot {
         }
         let r = self
             .scopes
-            .map(|(alloc, access)| f(&self.sandbox, alloc, access))
+            .map(|(alloc, access)| {
+                instrumentation::time_call(kind, || f(&self.sandbox, alloc, access))
+            })
             .expect("ble: reentrant call into the sandbox");
         r.map_err(|_| {
             self.fail(kind);
@@ -637,6 +659,7 @@ impl BleOmniglot {
                 stop_radio(self.intc, self.emulation);
                 self.stop(State::Starting(t0));
             } else if status & b::SANDBOX_STARTED != 0 {
+                self.start_us.set(now_us() - t0);
                 self.state.set(State::Ready);
                 self.reset_result.set(Ok(()));
             }
@@ -932,6 +955,9 @@ impl DeferredCallClient for BleOmniglot {
             }
         }
         if let Some(result) = self.reset_result.take() {
+            if result.is_ok() {
+                instrumentation::started(self, self.start_us.get());
+            }
             self.client.map(|c| c.reset_done(result));
         }
         if self.stopped_pending.take() {
@@ -950,6 +976,7 @@ impl DeferredCallClient for BleOmniglot {
                     self.drain_rx();
                 }
                 self.run();
+                instrumentation::tick(self);
             }
         }
     }

@@ -14,6 +14,10 @@
 
 #define THREADS_MAX 2
 
+// Debug: painted onto the stacks so that their high-water marks can be
+// measured.
+#define PAINT 0xdeadbeefu
+
 static struct thread* threads[THREADS_MAX];
 // The running thread, or NULL while the scheduler runs.
 static struct thread* current;
@@ -81,6 +85,9 @@ static void thread_entry(void) {
 void thread_create(struct thread* t, uint32_t* stack, uint32_t stack_size,
                    void (*entry)(void*), void* arg) {
   uint32_t words = stack_size / 4;
+  for (uint32_t w = 0; w < words; w++) {
+    stack[w] = PAINT;
+  }
   // The frame `thread_switch` restores. Its `ra` is `thread_entry`.
   uint32_t* frame = stack + words - 16;
   frame[0] = (uint32_t)thread_entry;
@@ -90,6 +97,8 @@ void thread_create(struct thread* t, uint32_t* stack, uint32_t stack_size,
       .deadline = -1,
       .entry = entry,
       .arg = arg,
+      .stack = stack,
+      .stack_words = words,
   };
   for (int i = 0; i < THREADS_MAX; i++) {
     if (threads[i] == NULL || threads[i] == t) {
@@ -174,4 +183,12 @@ bool threads_waiting_with_deadline(void) {
     }
   }
   return false;
+}
+
+uint32_t thread_stack_used(const struct thread* t) {
+  uint32_t unused = 0;
+  while (unused < t->stack_words && t->stack[unused] == PAINT) {
+    unused++;
+  }
+  return (t->stack_words - unused) * 4;
 }

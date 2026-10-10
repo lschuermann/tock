@@ -77,6 +77,7 @@ uint32_t sandbox_hci_recv(uint8_t* buf, uint32_t cap) {
       for (uint32_t i = 0; i < len; i++) {
         ring_get(&rx_ring);
       }
+      rx_ring.drops++;
       continue;
     }
     for (uint32_t i = 0; i < len; i++) {
@@ -107,4 +108,6 @@ fnptr const __attribute__((section(".omniglot_fntab"),
     /* 3 */ (fnptr)sandbox_hci_send,
     /* 4 */ (fnptr)sandbox_hci_recv,
     /* 5 */ (fnptr)sandbox_log,
+    /* 6 */ (fnptr)sandbox_stat,
+    /* 7 */ (fnptr)sandbox_test,
 };

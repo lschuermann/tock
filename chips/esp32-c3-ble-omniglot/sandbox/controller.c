@@ -58,6 +58,7 @@ static void notify_host_send_available(void) {
 
 static int notify_host_recv(uint8_t* data, uint16_t len) {
   if (len > PACKET_MAX || ring_space(&rx_ring) < 2u + len) {
+    rx_ring.drops++;
     return 0;
   }
   ring_put(&rx_ring, (uint8_t)len);

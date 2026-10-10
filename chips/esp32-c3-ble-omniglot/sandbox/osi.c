@@ -67,6 +67,7 @@ struct ring log_ring = RING(log_buf);
 
 static void log_putc(char c) {
   if (ring_space(&log_ring) == 0) {
+    log_ring.drops++;
     return;
   }
   ring_put(&log_ring, (uint8_t)c);
@@ -117,7 +118,8 @@ void fail(const char* what) {
 
 static uint8_t arena[HEAP_SIZE] __attribute__((aligned(8)));
 static bool heap_init;
-static uint32_t heap_used;
+uint32_t heap_used;
+uint32_t heap_peak;  // Debug
 
 static void set_hdr(uint8_t* p, uint32_t size, bool used) {
   ((uint32_t*)p)[0] = size;
@@ -147,6 +149,9 @@ static void* heap_malloc(size_t size) {
         }
         set_hdr(p, bsize, true);
         heap_used += bsize;
+        if (heap_used > heap_peak) {
+          heap_peak = heap_used;
+        }
         return p + HDR;
       }
     }
