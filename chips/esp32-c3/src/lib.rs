@@ -12,7 +12,9 @@ pub mod i2c;
 pub mod intc;
 pub mod interrupts;
 pub mod rng;
+pub mod syscon;
 pub mod sysreg;
+pub mod systimer;
 pub mod usb_serial_jtag;
 
 pub mod timg {

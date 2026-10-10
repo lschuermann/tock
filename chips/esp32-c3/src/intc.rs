@@ -9,22 +9,14 @@ use kernel::utilities::StaticRef;
 use kernel::utilities::registers::interfaces::{Readable, Writeable};
 use kernel::utilities::registers::{ReadWrite, register_bitfields, register_structs};
 
+/// Number of interrupt sources, each with a map register.
+const SOURCES: usize = 62;
+
 register_structs! {
     pub IntcRegisters {
-        (0x000 => _reserved0),
-        (0x040 => gpio_interrupt_pro_map: ReadWrite<u32>),
-        (0x044 => gpio_interrupt_pro_nmi_map: ReadWrite<u32>),
-        (0x048 => _reserved1),
-        (0x054 => uart0_intr_map: ReadWrite<u32>),
-        (0x058 => _reserved2),
-        (0x068 => usb_intr_map: ReadWrite<u32>),
-        (0x06C => _reserved6),
-        (0x074 => i2c_ext0_intr_map: ReadWrite<u32>),
-        (0x078 => _reserved7),
-        (0x080 => timg0_intr_map: ReadWrite<u32>),
-        (0x084 => _reserved3),
-        (0x088 => timg1_intr_map: ReadWrite<u32>),
-        (0x08C => _reserved4),
+        /// For each interrupt source (`interrupts::IRQ_*`), the CPU line it
+        /// raises. Line 0 does not exist, so 0 disconnects the source.
+        (0x000 => source_map: [ReadWrite<u32>; SOURCES]),
         (0x0f8 => status: [ReadWrite<u32>; 2]),
         (0x100 => clk_en: ReadWrite<u32>),
         (0x104 => enable: ReadWrite<u32, INT::Register>),
@@ -72,23 +64,29 @@ impl Intc {
     /// call into the ROM code to enable interrupts which maps the interrupts.
     /// In Tock we map them ourselves so we don't need to call into the ROM.
     pub fn map_interrupts(&self) {
-        self.intc_write_fence(|| {
-            self.registers.uart0_intr_map.set(interrupts::IRQ_UART0);
-            self.registers.timg0_intr_map.set(interrupts::IRQ_TIMER1);
-            self.registers.timg1_intr_map.set(interrupts::IRQ_TIMER2);
-            self.registers
-                .gpio_interrupt_pro_map
-                .set(interrupts::IRQ_GPIO);
-            self.registers
-                .gpio_interrupt_pro_nmi_map
-                .set(interrupts::IRQ_GPIO_NMI);
-            self.registers
-                .usb_intr_map
-                .set(interrupts::IRQ_USB_SERIAL_JTAG);
-            self.registers
-                .i2c_ext0_intr_map
-                .set(interrupts::IRQ_I2C_EXT0);
-        });
+        self.map_source(interrupts::IRQ_UART0, interrupts::IRQ_UART0);
+        self.map_source(interrupts::IRQ_TG0_T0_LEVEL, interrupts::IRQ_TIMER1);
+        self.map_source(interrupts::IRQ_TG1_T0_LEVEL, interrupts::IRQ_TIMER2);
+        self.map_source(interrupts::IRQ_GPIO, interrupts::IRQ_GPIO);
+        self.map_source(interrupts::IRQ_GPIO_NMI, interrupts::IRQ_GPIO_NMI);
+        self.map_source(
+            interrupts::IRQ_USB_SERIAL_JTAG,
+            interrupts::IRQ_USB_SERIAL_JTAG,
+        );
+        self.map_source(interrupts::IRQ_I2C_EXT0, interrupts::IRQ_I2C_EXT0);
+    }
+
+    /// Route interrupt source `source` to CPU line `line`. Must run with
+    /// `MIE` clear.
+    fn map_source(&self, source: u32, line: u32) {
+        if let Some(map) = self.registers.source_map.get(source as usize) {
+            self.intc_write_fence(|| map.set(line));
+        }
+    }
+
+    /// Disconnect interrupt source `source` from the CPU.
+    pub fn disconnect_source(&self, source: u32) {
+        rv32i::support::with_interrupts_disabled(|| self.map_source(source, 0));
     }
 
     /// Enable all interrupts.
@@ -143,11 +141,60 @@ impl Intc {
             rv32i::support::nop();
         }
 
-        let eip = self.registers.eip.get();
-        if eip == 0 {
+        let pending = self.pending();
+        if pending == 0 {
             None
         } else {
-            Some(eip.trailing_zeros())
+            Some(pending.trailing_zeros())
+        }
+    }
+
+    /// Interrupts awaiting service: those pending in the controller, plus
+    /// those masked by [`Intc::mask_pending`].
+    pub fn pending(&self) -> u32 {
+        self.registers.eip.get() | self.masked()
+    }
+
+    /// Lines masked by [`Intc::mask_pending`], until [`Intc::complete`].
+    ///
+    /// These are the lines disabled in `ENABLE`: [`Intc::enable_all`] enables
+    /// every line, and only [`Intc::mask_pending`] disables any. As it only
+    /// disables pending lines, and lines that no source is mapped to never
+    /// pend, `ENABLE` keeps some lines enabled after [`Intc::enable_all`]. An
+    /// all-zero `ENABLE` thus means that [`Intc::enable_all`] has not run yet,
+    /// and that no line is masked.
+    ///
+    /// Keeping this state in the controller, not in this struct, lets the trap
+    /// handler for foreign code mask lines through its own [`Intc`] instance.
+    fn masked(&self) -> u32 {
+        match self.registers.enable.get() {
+            0 => 0,
+            enable => !enable,
+        }
+    }
+
+    /// Mask every pending line, and record it for [`Intc::pending`]. Must run
+    /// with `MIE` clear.
+    ///
+    /// For an interrupt taken while foreign (Omniglot-sandboxed) code runs:
+    /// the runtime resumes that code after the trap, in user mode, which
+    /// takes machine interrupts regardless of `MIE`, so the line must not
+    /// stay asserted.
+    pub fn mask_pending(&self) {
+        let eip = self.registers.eip.get();
+        if eip != 0 {
+            let enable = self.registers.enable.get();
+            self.intc_write_fence(|| self.registers.enable.set(enable & !eip));
+        }
+    }
+
+    /// Finish servicing `irq`: unmask it if [`Intc::mask_pending`] masked
+    /// it. Must run with `MIE` clear.
+    pub fn complete(&self, irq: u32) {
+        let bit = 1_u32.checked_shl(irq).unwrap_or(0);
+        if self.masked() & bit != 0 {
+            let enable = self.registers.enable.get();
+            self.intc_write_fence(|| self.registers.enable.set(enable | bit));
         }
     }
 

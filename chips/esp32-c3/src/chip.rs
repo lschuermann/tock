@@ -172,6 +172,11 @@ impl<'a, I: InterruptService + 'a> Esp32C3<'a, I> {
         }
     }
 
+    /// The interrupt controller.
+    pub fn intc(&self) -> &Intc {
+        &self.intc
+    }
+
     pub fn map_pic_interrupts(&self) {
         // As per the ESP32-C3 reference manual, performing any operations on
         // the interrupt controller register may cause it to go into a
@@ -241,6 +246,10 @@ impl<'a, I: InterruptService + 'a> Chip for Esp32C3<'a, I> {
             {
                 panic!("Unhandled interrupt at IRQ {pending_interrupt}");
             }
+
+            // Unmask the line if foreign code was interrupted by it, here or
+            // before (see `disable_interrupt_trap_handler_foreign`):
+            self.intc.complete(pending_interrupt);
         }
 
         // [`start_trap_rust`] and [`disable_interrupt_trap_handler`] both clear
@@ -431,6 +440,29 @@ pub unsafe extern "C" fn disable_interrupt_trap_handler(mcause_val: u32) {
             // eventually handle these pending interrupts through
             // [`Chip::service_pending_interrupts`], which will re-enable `MIE`.
             CSR.mstatus.modify(csr::mstatus::mstatus::mpie::CLEAR);
+        }
+        _ => {
+            panic!("unexpected non-interrupt\n");
+        }
+    }
+}
+
+/// Function that gets called if an interrupt occurs while foreign
+/// (Omniglot-sandboxed) code runs, which resumes afterwards.
+///
+/// Unlike a process, foreign code continues after the trap, in user mode,
+/// where machine interrupts are taken regardless of `MIE`; so mask the
+/// pending lines (see [`Intc::mask_pending`]). Calls into foreign code run to
+/// completion inside the kernel, which services the masked lines before it
+/// next decides what to run.
+#[unsafe(export_name = "_disable_interrupt_trap_rust_from_foreign")]
+pub unsafe extern "C" fn disable_interrupt_trap_handler_foreign(mcause_val: u32) {
+    match mcause::Trap::from(mcause_val as usize) {
+        mcause::Trap::Interrupt(_) => {
+            // We are in the trap handler, with `MIE` clear, as
+            // `mask_pending` requires. The masked lines are recorded in the
+            // controller, where the chip's own `Intc` finds them.
+            Intc::new(INTC_BASE).mask_pending();
         }
         _ => {
             panic!("unexpected non-interrupt\n");
