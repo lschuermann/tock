@@ -1,0 +1,159 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2026.
+#
+# bindgen arguments used by `make bindings`. One argument per line; blank
+# lines and # comments are stripped.
+
+--use-core
+--ctypes-prefix
+core::ffi
+--no-layout-tests
+--no-doc-comments
+
+# Only what the board calls: nrfxlib declares the whole Bluetooth 6 command
+# set, and binding all of it would generate megabytes.
+--allowlist-function
+mpsl_init
+--allowlist-function
+mpsl_low_priority_process
+--allowlist-function
+MPSL_IRQ_CLOCK_Handler
+--allowlist-function
+MPSL_IRQ_RADIO_Handler
+--allowlist-function
+MPSL_IRQ_RTC0_Handler
+--allowlist-function
+MPSL_IRQ_TIMER0_Handler
+
+--allowlist-function
+sdc_init
+--allowlist-function
+sdc_enable
+--allowlist-function
+sdc_disable
+--allowlist-function
+sdc_cfg_set
+--allowlist-function
+sdc_rand_source_register
+--allowlist-function
+sdc_hci_get
+--allowlist-function
+sdc_hci_data_put
+--allowlist-function
+sdc_support_adv
+--allowlist-function
+sdc_support_peripheral
+--allowlist-function
+sdc_support_dle_peripheral
+--allowlist-function
+sdc_support_le_2m_phy
+--allowlist-function
+sdc_support_phy_update_peripheral
+
+--allowlist-function
+sdc_hci_cmd_cb_reset
+--allowlist-function
+sdc_hci_cmd_cb_set_event_mask
+--allowlist-function
+sdc_hci_cmd_cb_set_event_mask_page_2
+--allowlist-function
+sdc_hci_cmd_ip_read_bd_addr
+--allowlist-function
+sdc_hci_cmd_ip_read_local_supported_features
+--allowlist-function
+sdc_hci_cmd_ip_read_local_version_information
+--allowlist-function
+sdc_hci_cmd_lc_disconnect
+--allowlist-function
+sdc_hci_cmd_lc_read_remote_version_information
+--allowlist-function
+sdc_hci_cmd_le_encrypt
+--allowlist-function
+sdc_hci_cmd_le_long_term_key_request_negative_reply
+--allowlist-function
+sdc_hci_cmd_le_long_term_key_request_reply
+--allowlist-function
+sdc_hci_cmd_le_rand
+--allowlist-function
+sdc_hci_cmd_le_read_adv_physical_channel_tx_power
+--allowlist-function
+sdc_hci_cmd_le_read_buffer_size
+--allowlist-function
+sdc_hci_cmd_le_read_channel_map
+--allowlist-function
+sdc_hci_cmd_le_read_local_supported_features
+--allowlist-function
+sdc_hci_cmd_le_read_max_data_length
+--allowlist-function
+sdc_hci_cmd_le_read_phy
+--allowlist-function
+sdc_hci_cmd_le_read_remote_features
+--allowlist-function
+sdc_hci_cmd_le_read_suggested_default_data_length
+--allowlist-function
+sdc_hci_cmd_le_read_transmit_power
+--allowlist-function
+sdc_hci_cmd_le_set_adv_data
+--allowlist-function
+sdc_hci_cmd_le_set_adv_enable
+--allowlist-function
+sdc_hci_cmd_le_set_adv_params
+--allowlist-function
+sdc_hci_cmd_le_set_data_length
+--allowlist-function
+sdc_hci_cmd_le_set_default_phy
+--allowlist-function
+sdc_hci_cmd_le_set_event_mask
+--allowlist-function
+sdc_hci_cmd_le_set_phy
+--allowlist-function
+sdc_hci_cmd_le_set_random_address
+--allowlist-function
+sdc_hci_cmd_le_set_scan_response_data
+--allowlist-function
+sdc_hci_cmd_le_write_suggested_default_data_length
+
+# Not referenced by any allowlisted function, so named explicitly.
+--allowlist-type
+mpsl_clock_lfclk_cfg_t
+--allowlist-type
+MPSL_CLOCK_LF_SRC
+--constified-enum-module
+MPSL_CLOCK_LF_SRC
+--allowlist-type
+sdc_cfg_t
+# Declared by nrfxlib, but not provided by the peripheral-only library, so
+# only the return type is bound; see read_local_supported_commands.
+--allowlist-type
+sdc_hci_cmd_ip_read_local_supported_commands_return_t
+
+# The feature and event-mask types are bitfields whose generated accessors
+# account for most of the output. Nothing reads individual bits here: the
+# masks are passed through as bytes, and only the enclosing command's size
+# matters. Both allowlisted and opaque, as --opaque-type alone does not emit
+# a definition.
+--allowlist-type
+sdc_hci_cb_event_mask_page_2_t
+--opaque-type
+sdc_hci_cb_event_mask_page_2_t
+--allowlist-type
+sdc_hci_cb_event_mask_t
+--opaque-type
+sdc_hci_cb_event_mask_t
+--allowlist-type
+sdc_hci_ip_lmp_features_t
+--opaque-type
+sdc_hci_ip_lmp_features_t
+--allowlist-type
+sdc_hci_ip_supported_commands_t
+--opaque-type
+sdc_hci_ip_supported_commands_t
+--allowlist-type
+sdc_hci_le_le_event_mask_t
+--opaque-type
+sdc_hci_le_le_event_mask_t
+--allowlist-type
+sdc_hci_le_le_features_t
+--opaque-type
+sdc_hci_le_le_features_t

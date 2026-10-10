@@ -1,0 +1,36 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2026.
+
+[package]
+name = "nrf52840dk-sdc"
+version.workspace = true
+authors.workspace = true
+build = "build.rs"
+edition.workspace = true
+
+[[bin]]
+name = "nrf52840dk-sdc"
+path = "src/main.rs"
+
+[dependencies]
+nrf52840dk = { path = "../nrf52840dk" }
+components = { path = "../../components" }
+cortexm4 = { path = "../../../arch/cortex-m4" }
+cortexm4f = { path = "../../../arch/cortex-m4f" }
+kernel = { path = "../../../kernel" }
+nrf52840 = { path = "../../../chips/nrf52840" }
+nrf52 = { path = "../../../chips/nrf52" }
+capsules-core = { path = "../../../capsules/core" }
+capsules-extra = { path = "../../../capsules/extra" }
+capsules-system = { path = "../../../capsules/system" }
+
+# Nordic SoftDevice Controller and MPSL binaries, plus the nrfxlib headers
+# `make bindings` generates src/bindings.rs from.
+tock-firmware-nrf-sdc = { git = "https://github.com/lschuermann/tock-firmware", branch = "dev/nrf-sdc" }
+
+[build-dependencies]
+tock_build_scripts = { path = "../../build_scripts" }
+
+[lints]
+workspace = true

@@ -945,6 +945,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nrf52840dk-sdc"
+version = "0.2.4-dev"
+dependencies = [
+ "capsules-core",
+ "capsules-extra",
+ "capsules-system",
+ "components",
+ "cortexm4",
+ "cortexm4f",
+ "kernel",
+ "nrf52",
+ "nrf52840",
+ "nrf52840dk",
+ "tock-firmware-nrf-sdc",
+ "tock_build_scripts",
+]
+
+[[package]]
 name = "nrf52840dk-test-appid-ecdsap256"
 version = "0.2.4-dev"
 dependencies = [
@@ -1911,6 +1929,11 @@ version = "0.1.0"
 name = "tock-firmware-cyw43"
 version = "0.1.0"
 source = "git+https://github.com/tock/firmware.git#86ad8b00315dc5f44593722ece80ad077d7ebdb7"
+
+[[package]]
+name = "tock-firmware-nrf-sdc"
+version = "0.1.0"
+source = "git+https://github.com/lschuermann/tock-firmware?branch=dev%2Fnrf-sdc#f3cec397f6883842816bd8d495f5c484ee690081"
 
 [[package]]
 name = "tock-registers"
