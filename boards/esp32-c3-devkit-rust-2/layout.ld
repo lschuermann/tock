@@ -25,15 +25,45 @@
  * The kernel stack is at the bottom of the `ram` region. The `iram` region is
  * at the top of the usable SRAM because a kernel stack overflow must not
  * overwrite code in the `iram` region.
+ *
+ * Espressif's BLE controller runs in an Omniglot sandbox, linked separately
+ * (`chips/esp32-c3-ble-omniglot/sandbox/layout.ld`, which must match) and
+ * merged into the kernel binary by `make`:
+ *
+ * - in `rom`, between the kernel and the kernel attributes at its end:
+ *   `ble_load` (the sandbox's header and the load copies of its .iram1 and
+ *   .data, read by the kernel) and `ble_flash` (its .text and .rodata, the
+ *   sandbox's code window, a 256 KiB NAPOT PMP region);
+ * - `ble_iram`: its .iram1 code, run from the bottom of SRAM through the
+ *   instruction-bus alias (0x40380000 = 0x3FC80000 + 0x700000);
+ * - `ble_ram`: its data, stacks and heap, directly below `iram`.
+ *
+ * Nothing of the kernel may execute from these regions, and the sandbox gets
+ * no access to `iram`. libtock-c's ESP32-C3 targets (RAM at 0x3FCA0000..
+ * 0x3FCD0000) still fit in `ram`. Without the sandbox, the kernel runs
+ * without BLE.
  */
 
 MEMORY
 {
   rom  (rx)  : ORIGIN = 0x42000000, LENGTH = 0x00100000
   prog (rx)  : ORIGIN = 0x42100000, LENGTH = 0x00300000
-  ram  (rw)  : ORIGIN = 0x3FC80000, LENGTH = 0x0005EF00
+  ram  (rw)  : ORIGIN = 0x3FC88000, LENGTH = 0x00048000
   iram (rx)  : ORIGIN = 0x403DEF00, LENGTH = 0x00000100
+
+  ble_iram (rx) : ORIGIN = 0x40380000, LENGTH = 0x8000
+  ble_ram  (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEF00
 }
+
+/* Inside `rom`; nothing of the kernel link is placed there. */
+_ble_load_start = 0x42070000;
+_ble_load_end = 0x42080000;
+_ble_flash_start = 0x42080000;
+_ble_flash_end = 0x420C0000;
+_ble_iram_start = ORIGIN(ble_iram);
+_ble_iram_end = ORIGIN(ble_iram) + LENGTH(ble_iram);
+_ble_ram_start = ORIGIN(ble_ram);
+_ble_ram_end = ORIGIN(ble_ram) + LENGTH(ble_ram);
 
 SECTIONS
 {
@@ -74,3 +104,6 @@ _eiram_dbus = ADDR(.iram) + SIZEOF(.iram) - 0x700000;
  * so this function will be set as the entrypoint no matter what linker we're
  * using */
 ENTRY(esp32_c3_direct_boot_entry)
+
+ASSERT(LOADADDR(.relocate) + SIZEOF(.relocate) <= _ble_load_start,
+       "the kernel overlaps the BLE sandbox")

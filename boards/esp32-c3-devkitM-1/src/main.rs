@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-//! Board file for ESP32-C3 RISC-V development platform.
+//! Board file for ESP32-C3 RISC-V development platform, with Espressif's BLE
+//! controller running in an Omniglot sandbox and exposed to userspace as an
+//! H4 HCI transport (driver 0x30001).
 //!
+//! The controller (the mask ROM's link layer plus Espressif's `libbtdm_app`,
+//! `libbtbb`, `libphy` and `libcoexist`) and its C glue are linked into a
+//! separate sandbox, which runs in user mode under the PMP. See
+//! `chips/esp32-c3-ble-omniglot` and `OMNIGLOT_BLE_PLAN.md`.
 
 #![no_std]
 #![no_main]
@@ -13,23 +19,43 @@
 
 use capsules_core::virtualizers::virtual_alarm::{MuxAlarm, VirtualMuxAlarm};
 use esp32_c3::chip::Esp32C3DefaultPeripherals;
+use esp32_c3_ble_omniglot::BleOmniglot;
 use kernel::capabilities;
 use kernel::component::Component;
 use kernel::debug::PanicResources;
+use kernel::deferred_call::DeferredCallClient;
+use kernel::platform::chip::InterruptService;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
+use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::registers::interfaces::ReadWriteable;
 use kernel::utilities::single_thread_value::SingleThreadValue;
-use kernel::{create_capability, debug, hil, static_init};
+use kernel::{create_capability, debug, hil, static_buf, static_init};
 use rv32i::csr;
 
 pub mod io;
+
+type HciDriver = components::bluetooth_hci::BluetoothHciComponentType<BleOmniglot>;
 
 #[cfg(test)]
 mod tests;
 
 const NUM_PROCS: usize = 4;
 
-type ChipHw = esp32_c3::chip::Esp32C3<'static, Esp32C3DefaultPeripherals<'static>>;
+/// Services the BT interrupts in Tock's deferred interrupt path, ahead of the
+/// stock peripherals.
+struct BtInterruptService {
+    base: &'static Esp32C3DefaultPeripherals<'static>,
+    bt: OptionalCell<&'static BleOmniglot>,
+}
+
+impl InterruptService for BtInterruptService {
+    fn service_interrupt(&self, interrupt: u32) -> bool {
+        self.bt.map_or(false, |bt| bt.service_interrupt(interrupt))
+            || self.base.service_interrupt(interrupt)
+    }
+}
+
+type ChipHw = esp32_c3::chip::Esp32C3<'static, BtInterruptService>;
 type AlarmHw = esp32_c3::timg::TimG<'static>;
 type SchedulerTimerHw =
     components::virtual_scheduler_timer::VirtualSchedulerTimerNoMuxComponentType<AlarmHw>;
@@ -63,7 +89,8 @@ static mut MAIN_CAP: Option<&dyn kernel::capabilities::MainLoopCapability> = Non
 // Test access to alarm
 static mut ALARM: Option<&'static MuxAlarm<'static, esp32_c3::timg::TimG<'static>>> = None;
 
-kernel::stack_size! {0x900}
+// Omniglot callbacks run in the trap handler, on the kernel stack.
+kernel::stack_size! {0x1000}
 
 type RngDriver = components::rng::RngComponentType<esp32_c3::rng::Rng<'static>>;
 type GpioHw = esp32::gpio::GpioPin<'static>;
@@ -91,6 +118,7 @@ struct Esp32C3Board {
     rng: &'static RngDriver,
     led: &'static LedDriver,
     button: &'static ButtonDriver,
+    hci: Option<&'static HciDriver>,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -106,14 +134,15 @@ impl SyscallDriverLookup for Esp32C3Board {
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules_core::led::DRIVER_NUM => f(Some(self.led)),
             capsules_core::button::DRIVER_NUM => f(Some(self.button)),
+            capsules_extra::bluetooth_hci::DRIVER_NUM => {
+                f(self.hci.map(|h| h as &dyn kernel::syscall::SyscallDriver))
+            }
             _ => f(None),
         }
     }
 }
 
-impl KernelResources<esp32_c3::chip::Esp32C3<'static, Esp32C3DefaultPeripherals<'static>>>
-    for Esp32C3Board
-{
+impl KernelResources<ChipHw> for Esp32C3Board {
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
@@ -148,7 +177,7 @@ impl KernelResources<esp32_c3::chip::Esp32C3<'static, Esp32C3DefaultPeripherals<
 unsafe fn setup() -> (
     &'static kernel::Kernel,
     &'static Esp32C3Board,
-    &'static esp32_c3::chip::Esp32C3<'static, Esp32C3DefaultPeripherals<'static>>,
+    &'static ChipHw,
     &'static Esp32C3DefaultPeripherals<'static>,
 ) {
     use esp32_c3::sysreg::{CpuFrequency, PllFrequency};
@@ -386,15 +415,79 @@ unsafe fn setup() -> (
     // CHIP AND INTERRUPTS
     //
 
-    let chip = static_init!(
-        esp32_c3::chip::Esp32C3<
-            Esp32C3DefaultPeripherals,
-        >,
-        esp32_c3::chip::Esp32C3::new(peripherals)
+    let interrupt_service = static_init!(
+        BtInterruptService,
+        BtInterruptService {
+            base: peripherals,
+            bt: OptionalCell::empty(),
+        }
     );
+    let chip = static_init!(ChipHw, esp32_c3::chip::Esp32C3::new(interrupt_service));
     PANIC_RESOURCES.get().map(|resources| {
         resources.chip.put(chip);
     });
+
+    //
+    // BLE CONTROLLER
+    //
+
+    // Only if its sandbox was written to flash (`make flash`); otherwise the
+    // board runs without it.
+
+    // These symbols are defined in the linker script.
+    extern "C" {
+        static _ble_load_start: u8;
+        static _ble_load_end: u8;
+        static _ble_flash_start: u8;
+        static _ble_flash_end: u8;
+        static _ble_iram_start: u8;
+        static _ble_iram_end: u8;
+        static _ble_ram_start: u8;
+        static _ble_ram_end: u8;
+    }
+    let region = |start: *const u8, end: *const u8| (start as usize, end as usize);
+    let ble_regions = esp32_c3_ble_omniglot::Regions {
+        load: region(&raw const _ble_load_start, &raw const _ble_load_end),
+        flash: region(&raw const _ble_flash_start, &raw const _ble_flash_end),
+        iram: region(&raw const _ble_iram_start, &raw const _ble_iram_end),
+        ram: region(&raw const _ble_ram_start, &raw const _ble_ram_end),
+    };
+    // ### Safety
+    //
+    // Called once, before processes run; layout.ld reserves the sandbox's
+    // regions.
+    let bt = match unsafe {
+        BleOmniglot::create(
+            &chip.pmp.pmp,
+            chip.intc(),
+            ble_regions,
+            static_buf!(esp32_c3_ble_omniglot::SandboxPmp),
+            static_buf!(esp32_c3_ble_omniglot::Emulation),
+            static_buf!(esp32_c3_ble_omniglot::SandboxRuntime),
+            static_buf!(esp32_c3_ble_omniglot::RomRamSnapshot),
+        )
+    } {
+        Ok(bt) => Some(&*static_init!(BleOmniglot, bt)),
+        Err(e) => {
+            debug!("ble: no BLE controller: {}", e);
+            None
+        }
+    };
+    let hci = match bt {
+        Some(bt) => {
+            bt.register();
+            interrupt_service.bt.set(bt);
+            let hci = components::bluetooth_hci::BluetoothHciComponent::new(
+                board_kernel,
+                capsules_extra::bluetooth_hci::DRIVER_NUM,
+                bt,
+                create_capability!(capabilities::MemoryAllocationCapability),
+            )
+            .finalize(components::bluetooth_hci_component_static!(BleOmniglot));
+            Some(hci)
+        }
+        None => None,
+    };
 
     // Need to enable all interrupts for Tock Kernel
     chip.map_pic_interrupts();
@@ -404,6 +497,9 @@ unsafe fn setup() -> (
     csr::CSR.mstatus.modify(csr::mstatus::mstatus::mie::SET);
 
     esp32_c3::flash::print_active_flash_mode();
+
+    // The controller starts when a process first uses the HCI driver.
+
     debug!("ESP32-C3 initialisation complete.");
     debug!("Entering main loop.");
 
@@ -433,7 +529,8 @@ unsafe fn setup() -> (
             scheduler_timer,
             rng,
             led,
-            button
+            button,
+            hci,
         }
     );
 

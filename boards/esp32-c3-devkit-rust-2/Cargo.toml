@@ -20,6 +20,8 @@ capsules-core = { path = "../../capsules/core" }
 capsules-extra = { path = "../../capsules/extra" }
 capsules-system = { path = "../../capsules/system" }
 
+esp32-c3-ble-omniglot = { path = "../../chips/esp32-c3-ble-omniglot" }
+
 [build-dependencies]
 tock_build_scripts = { path = "../build_scripts" }
 

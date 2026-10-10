@@ -114,6 +114,41 @@ $ tockloader install
 Tockloader writes the app to flash without changing the kernel, so the kernel
 and apps can be installed in any order.
 
+## BLE Controller
+
+Espressif's BLE controller runs in an
+[Omniglot](https://github.com/omniglot-rs/omniglot) sandbox in user mode, and is
+exposed to apps as an H4 HCI transport (driver `0x30001`).
+
+The controller (the mask ROM's link layer, and Espressif's `libbtdm_app`,
+`libbtbb`, `libphy` and `libcoexist` archives from the `esp32c3-bt` crate of
+[tock/firmware](https://github.com/tock/firmware), a Cargo dependency of
+`chips/esp32-c3-ble-omniglot`) and its C glue are linked into a separate
+sandbox, which `make` writes into the kernel binary. The kernel driver and the
+sandbox's sources are in `chips/esp32-c3-ble-omniglot`. Building the sandbox
+needs `riscv64-none-elf-gcc`, which Tock's `shell.nix` provides.
+
+```shell
+make flash                 # kernel with the BLE controller
+make flash BLE_SANDBOX=0   # kernel alone; it runs without BLE
+```
+
+The Rust bindings to the sandbox are checked in. After changing
+`sandbox/sandbox.h`, regenerate them with `make ble-omniglot-bindings`, which
+needs libclang.
+
+Memory set aside for the sandbox (`layout.ld`,
+`chips/esp32-c3-ble-omniglot/sandbox/layout.ld`): in the kernel's flash
+region, `0x42070000..0x42080000` (read by the kernel only) and
+`0x42080000..0x420C0000` (its code); in SRAM, `0x3FC80000..0x3FC88000` for its
+`.iram1` code and `0x3FCD0000..0x3FCDEF00` for its data. Apps keep their flash
+(from `0x42100000`) and get RAM up to `0x3FCD0000`, which holds libtock-c's
+ESP32-C3 targets.
+
+Apps talk HCI to the controller, e.g. libtock-c's `nimble_bleprph`. The
+design, measurements and status are in `OMNIGLOT_BLE_PLAN.md` at the root of
+this repository.
+
 ## JTAG Debugging
 
 In order to use JTAG debugging you first need to build a fork of OpenOCD
