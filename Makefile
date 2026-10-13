@@ -656,10 +656,13 @@ endef
 ci-job-qemu: ci-setup-qemu
 	$(if $(CI_JOB_QEMU),$(call ci_job_qemu))
 
+# hifive1 only runs `hello_world`, as the other tests have not been tried on it
+# yet.
 define ci_job_qemu_virt
-	$(call banner,CI-Job: QEMU virt (rv64))
-	@cd tools/ci/qemu-virt-ci-runner;\
-		NOWARNINGS=true cargo run -- $(QEMU_VIRT_ARGS)
+	$(call banner,CI-Job: QEMU virt (tock-integration-test-harness))
+	NOWARNINGS=true cargo run --manifest-path tools/ci/integration-test/Cargo.toml -- run \
+		--tock . --test alltests@qemu_rv64_virt --test hello_world@hifive1 --out-dir qemu-virt-out \
+		$(QEMU_VIRT_ARGS)
 endef
 
 .PHONY: ci-job-qemu-virt

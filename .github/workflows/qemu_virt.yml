@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright Tock Contributors 2026.
 
-# This workflow runs the qemu-virt-ci-runner, which builds the qemu_rv64_virt
-# Tock kernel, installs libtock-c apps via tockloader, runs the board inside
-# qemu-system-riscv64, and verifies serial output and screen state.
+# This workflow runs the tests of the QEMU boards with tools/ci/integration-test, which
+# builds their Tock kernels and libtock-c apps, writes them to flash files with
+# tockloader, runs the boards inside QEMU, and checks their console output and
+# screen.
 
 name: qemu-virt-ci
 env:
@@ -45,10 +46,12 @@ jobs:
       - name: Install elf2tab
         run: cargo install elf2tab
 
+      # Install tockloader from a branch until a release supports the flash file
+      # of a `hifive1b`.
       - name: Install tockloader
         shell: bash
         run: |
-          pipx install tockloader
+          pipx install git+https://github.com/tock/tockloader@dev/hifive1-flash-file
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Checkout libtock-c
@@ -57,28 +60,22 @@ jobs:
           repository: tock/libtock-c
           path: libtock-c
 
-      - name: Build the qemu_rv64_virt-test-ci kernel
-        shell: bash
-        run: |
-          pushd boards/configurations/qemu_rv64_virt/qemu_rv64_virt-test-ci
-          make
-          make init
-          make install
-          popd
-
       - name: Start virtual framebuffer
         run: |
           Xvfb :99 -screen 0 1024x768x24 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
 
-      - name: Run qemu_rv64_virt-test-ci CI tests
+      - name: Run the QEMU board tests
         shell: bash
         # libtock-c is checked out inside the tock workspace in CI (GitHub
         # Actions requires checkouts to be under the workspace root).
-        # ../../../libtock-c is relative to tools/ci/qemu-virt-ci-runner/,
-        # which is the working directory when cargo run executes.
-        run: make ci-job-qemu-virt QEMU_VIRT_ARGS="--board qemu_rv64_virt --libtock-c ../../../libtock-c"
+        run: make ci-job-qemu-virt QEMU_VIRT_ARGS="--libtock-c libtock-c"
 
-      - name: Run hifive1 QEMU CI tests
-        shell: bash
-        run: make ci-job-qemu-virt QEMU_VIRT_ARGS="--board hifive1 --libtock-c ../../../libtock-c"
+      # Upload the console logs and screens, such that the screens can be
+      # inspected and their hashes recorded.
+      - name: Upload the test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-virt-logs
+          path: qemu-virt-out/logs
