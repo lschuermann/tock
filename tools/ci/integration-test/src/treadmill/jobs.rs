@@ -609,4 +609,18 @@ mod tests {
             "initializing: fetching image"
         );
     }
+
+    #[test]
+    fn long_labels_name_what_fits() {
+        let all = plan(&["alltests"]);
+        assert!(all.tests.len() > 10);
+        let label = job_label(&all, Some(12));
+        assert!(label.len() <= MAX_LABEL, "{} long: {label}", label.len());
+        assert!(label.ends_with(", ...)"), "{label}");
+        assert!(
+            label
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b" ()_,.#-".contains(&c))
+        );
+    }
 }

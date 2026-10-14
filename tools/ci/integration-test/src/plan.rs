@@ -4,7 +4,7 @@
 
 use crate::boards::Board;
 use crate::test_cases::{TESTS, TestCase};
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use fs_err as fs;
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,8 @@ pub struct Plan {
     /// Artifacts to build, by label.
     pub artifacts: BTreeMap<String, BuildSpec>,
     pub tests: Vec<PlannedTest>,
+    /// Selected tests which are unsupported on their board.
+    pub unsupported: Vec<UnsupportedTest>,
 }
 
 /// A test, planned on a specific board.
@@ -58,6 +60,31 @@ impl PlannedTest {
     /// Return the id of the planned test, in the form `<test>@<board>`.
     pub fn id(&self) -> String {
         format!("{}@{}", self.test.id, self.board)
+    }
+}
+
+/// A test which is unsupported on a board (see [`TestCase::unsupported`]).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UnsupportedTest {
+    #[serde(with = "crate::test_cases::by_id")]
+    pub test: &'static TestCase,
+    #[serde(with = "crate::boards::by_name")]
+    pub board: &'static Board,
+}
+
+impl UnsupportedTest {
+    /// Return the id of the test on the board, in the form `<test>@<board>`.
+    pub fn id(&self) -> String {
+        format!("{}@{}", self.test.id, self.board)
+    }
+
+    /// Return the reason the test is unsupported on the board.
+    ///
+    /// This panics if the test is supported on the board in this build of the
+    /// harness, which happens when the plan was created by a different build.
+    pub fn reason(&self) -> &'static str {
+        (self.test.unsupported_reason(self.board))
+            .unwrap_or_else(|| panic!("{} is supported in this build", self.id()))
     }
 }
 
@@ -137,9 +164,14 @@ impl Plan {
         let mut plan = Plan {
             artifacts: BTreeMap::new(),
             tests: Vec::new(),
+            unsupported: Vec::new(),
         };
         for test in TESTS {
             for board in test.boards() {
+                if test.unsupported_reason(board).is_some() {
+                    plan.unsupported.push(UnsupportedTest { test, board });
+                    continue;
+                }
                 let kernel = plan.add_artifact(BuildSpec::TockKernel { board });
                 let tock_targets: Vec<String> =
                     board.tock_targets.iter().map(|t| t.to_string()).collect();
@@ -163,6 +195,7 @@ impl Plan {
         // The order of `TESTS` and `BOARDS` depends on the linker. Sort the
         // planned tests, such that a plan does not depend on link order:
         plan.tests.sort_by_key(|t| (t.test.id, t.board.name));
+        plan.unsupported.sort_by_key(|u| (u.test.id, u.board.name));
 
         plan.select(selection)
     }
@@ -188,10 +221,19 @@ impl Plan {
     /// Otherwise, it picks the test's first board.
     pub fn select(&self, selection: &Selection) -> Result<Plan> {
         for selector in &selection.tests {
+            if self.tests.iter().any(|t| selector.matches(t.test, t.board)) {
+                continue;
+            }
+            let unsupported: Vec<String> = (self.unsupported.iter())
+                .filter(|u| selector.matches(u.test, u.board))
+                .map(|u| format!("{} ({})", u.id(), u.reason()))
+                .collect();
             ensure!(
-                self.tests.iter().any(|t| selector.matches(t.test, t.board)),
-                "--test {selector} matches no planned test"
+                unsupported.is_empty(),
+                "--test {selector} matches only unsupported tests: {}",
+                unsupported.join(", ")
             );
+            bail!("--test {selector} matches no planned test");
         }
         let (any, fixed): (Vec<&Selector>, Vec<&Selector>) =
             (selection.tests.iter()).partition(|s| s.board == BoardSelector::Any);
@@ -222,14 +264,19 @@ impl Plan {
                 boards.insert(self.tests[pick].board.name);
             }
         }
-        Ok(self.part(|i, _| keep[i]))
+        Ok(self.part(|i, _| keep[i], |u| selection.matches(u.test, u.board)))
     }
 
-    /// Return the part of this plan with the tests for which `test` returns
-    /// `true`, along with the artifacts these tests use.
+    /// Return the part of this plan with the tests and unsupported tests for
+    /// which `test` and `unsupported` return `true`, along with the artifacts
+    /// these tests use.
     ///
     /// `test` receives the index of each test in [`Plan::tests`].
-    pub fn part(&self, test: impl Fn(usize, &PlannedTest) -> bool) -> Plan {
+    pub fn part(
+        &self,
+        test: impl Fn(usize, &PlannedTest) -> bool,
+        unsupported: impl Fn(&UnsupportedTest) -> bool,
+    ) -> Plan {
         let tests: Vec<PlannedTest> = (self.tests.iter().enumerate())
             .filter(|(i, t)| test(*i, t))
             .map(|(_, t)| t.clone())
@@ -243,6 +290,10 @@ impl Plan {
                 .map(|(label, spec)| (label.clone(), spec.clone()))
                 .collect(),
             tests,
+            unsupported: (self.unsupported.iter())
+                .filter(|u| unsupported(u))
+                .cloned()
+                .collect(),
         }
     }
 
@@ -277,6 +328,9 @@ impl Plan {
                 tests.join(", ")
             );
         }
+        for u in &self.unsupported {
+            out += &format!("  unsupported: {} ({})\n", u.id(), u.reason());
+        }
         out
     }
 }
@@ -291,6 +345,13 @@ pub struct Selection {
     /// and `anyboard` picks one board). May be repeated.
     #[arg(long = "test", value_name = "TEST@BOARD")]
     pub tests: Vec<Selector>,
+}
+
+impl Selection {
+    /// Check if this selection includes `test` on `board`.
+    fn matches(&self, test: &TestCase, board: &Board) -> bool {
+        self.tests.is_empty() || self.tests.iter().any(|s| s.matches(test, board))
+    }
 }
 
 /// A single `--test` selector, which matches one or all tests on one, all or
@@ -393,6 +454,7 @@ mod tests {
         let empty = Plan {
             artifacts: BTreeMap::new(),
             tests: Vec::new(),
+            unsupported: Vec::new(),
         };
         let selection = Selection {
             tests: vec!["hello_world@allboards".parse().unwrap()],
@@ -400,6 +462,32 @@ mod tests {
         let error = empty.select(&selection).err().unwrap();
         assert!(
             error.to_string().contains("matches no planned test"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unsupported_tests_are_left_out_with_their_reason() {
+        let plan = Plan::compute(&Selection::default()).unwrap();
+        let id = "lua_hello@qemu_rv64_virt";
+        assert!(plan.tests.iter().all(|t| t.id() != id));
+        assert!(plan.unsupported.iter().any(|u| u.id() == id));
+        // Selecting other tests also leaves it out of the unsupported tests:
+        let plan = Plan::compute(&Selection {
+            tests: vec!["hello_world@allboards".parse().unwrap()],
+        })
+        .unwrap();
+        assert!(plan.unsupported.is_empty());
+    }
+
+    #[test]
+    fn selecting_only_unsupported_tests_fails() {
+        let selection = Selection {
+            tests: vec!["lua_hello@qemu_rv64_virt".parse().unwrap()],
+        };
+        let error = Plan::compute(&selection).err().unwrap();
+        assert!(
+            error.to_string().contains("matches only unsupported tests"),
             "{error}"
         );
     }

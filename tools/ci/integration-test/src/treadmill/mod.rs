@@ -18,7 +18,7 @@ pub use in_job::JobArgs;
 
 use crate::boards::Board;
 use crate::logging;
-use crate::plan::{Plan, Selection};
+use crate::plan::{Plan, Selection, UnsupportedTest};
 use crate::prebuild::{self, HOST_TARGETS};
 use crate::run::{self, LOGS_DIR, RESULTS_FILE, TestReport};
 use crate::test_cases::TestOutcome;
@@ -133,7 +133,9 @@ struct Group {
 /// Split `plan` into the groups which run on a job each.
 ///
 /// There is one group per board, or up to `jobs_per_board` groups for boards
-/// with as many tests, each with a contiguous share of the board's tests.
+/// with as many tests, each with a contiguous share of the board's tests. The
+/// first group of a board reports the board's unsupported tests. The first
+/// group overall reports the unsupported tests of boards without any tests.
 fn groups(plan: &Plan, jobs_per_board: usize) -> Result<Vec<Group>> {
     let mut by_board: BTreeMap<&str, (&'static Board, Vec<usize>)> = BTreeMap::new();
     for (i, test) in plan.tests.iter().enumerate() {
@@ -154,10 +156,14 @@ fn groups(plan: &Plan, jobs_per_board: usize) -> Result<Vec<Group>> {
             let (size, extra) = (tests.len() / jobs, tests.len() % jobs);
             let begin = share * size + share.min(extra);
             let end = begin + size + usize::from(share < extra);
+            let first = groups.is_empty();
+            let unsupported = |u: &UnsupportedTest| {
+                (share == 0 && u.board == *board) || (first && !by_board.contains_key(u.board.name))
+            };
             groups.push(Group {
                 label: log_label(board.name, share, jobs),
                 board,
-                plan: plan.part(|i, _| tests[begin..end].contains(&i)),
+                plan: plan.part(|i, _| tests[begin..end].contains(&i), unsupported),
             });
         }
     }
@@ -250,10 +256,10 @@ impl Args {
         // itself:
         let mut unrunnable_reports = Vec::new();
         let plan = match self.job.is_none().then(fleet) {
-            None => selected.part(|_, _| true),
+            None => selected.part(|_, _| true, |_| true),
             Some(Err(e)) => {
                 warn!("failed to list the Treadmill hosts, so running every test: {e:#}");
-                selected.part(|_, _| true)
+                selected.part(|_, _| true, |_| true)
             }
             Some(Ok(fleet)) => {
                 let mut runnable = Vec::new();
@@ -268,7 +274,7 @@ impl Args {
                         });
                     }
                 }
-                selected.part(|i, _| runnable[i])
+                selected.part(|i, _| runnable[i], |_| true)
             }
         };
         let skipped: Vec<&str> = (planned.iter())

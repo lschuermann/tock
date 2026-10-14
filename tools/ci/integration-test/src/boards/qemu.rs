@@ -248,6 +248,12 @@ impl Drop for Qemu {
 }
 
 impl Uart for Qemu {
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        let console = self.console.as_mut().context("QEMU is not running")?;
+        console.write_all(bytes)?;
+        Ok(())
+    }
+
     fn receive_until(&mut self, needle: &str, timeout: Duration) -> Result<String> {
         let deadline = Instant::now() + timeout;
         let mut chunk = [0u8; 256];

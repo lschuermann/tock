@@ -215,6 +215,15 @@ fn run_tests(
         reports.push(TestReport { id, outcome });
     }
 
+    for unsupported in &plan.unsupported {
+        let id = unsupported.id();
+        let reason = format!("unsupported on this board: {}", unsupported.reason());
+        info!("=== {id} ===");
+        info!("  SKIPPED: {reason}");
+        let outcome = TestOutcome::Skipped { reason };
+        reports.push(TestReport { id, outcome });
+    }
+
     reports
 }
 

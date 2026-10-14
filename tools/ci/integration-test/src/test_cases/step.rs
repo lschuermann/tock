@@ -8,22 +8,39 @@
 //! step ([`Step::cost`]) is the longest time it may take on a board when all of
 //! its waits time out. It is computed from the board's [`Timing`].
 //!
-//! Each step is bounded by its own cost, and there is no overall deadline. Time
-//! spent on the host between steps is not accounted for.
+//! [`Step::Within`] runs procedural code, which declares its cost as a fixed
+//! budget. Each primitive the code calls charges its cost on the board against
+//! this budget before it runs, and fails the test if the budget does not cover
+//! it. The charged cost only depends on the board and the path the code takes.
+//! Thus, a budget which is too short fails every run on a board that takes this
+//! path, independent of the speed of the device.
 
 use super::{Requirement, TestCase};
-use crate::boards::{Dut, Timing, Uart};
-use anyhow::{Result, anyhow, ensure};
+use crate::boards::{Board, Dut, Timing, Uart};
+use anyhow::{Result, anyhow, bail, ensure};
 use log::info;
 use serde::Serialize;
 use std::mem;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// Delay after each byte typed on the console. Consoles may drop input which
+/// arrives faster than they process it.
+const TYPING_DELAY: Duration = Duration::from_millis(10);
+
 #[derive(Clone, Copy)]
 pub enum Step {
     /// Wait for the given text on the console.
     Expect(&'static str),
+    /// Type the given text on the console.
+    Send(&'static str),
+    /// Check the console output received by `Expect` steps since the last
+    /// `Check`.
+    Check(fn(&str, &Board) -> Result<()>),
+    /// Sleep for the given duration.
+    Sleep(Duration),
+    /// Run procedural code, which may charge up to the given budget.
+    Within(Duration, fn(&mut Ctx) -> Result<()>),
 }
 
 impl Step {
@@ -31,8 +48,16 @@ impl Step {
     pub fn cost(&self, timing: &Timing) -> Duration {
         match *self {
             Step::Expect(_) => timing.expect,
+            Step::Send(text) => typing_time(text),
+            Step::Check(_) => Duration::ZERO,
+            Step::Sleep(duration) | Step::Within(duration, _) => duration,
         }
     }
+}
+
+/// Return the time it takes to type `text` on the console.
+fn typing_time(text: &str) -> Duration {
+    TYPING_DELAY * text.len() as u32
 }
 
 /// Return an error if the operation `what`, which started at `start`, took
@@ -96,7 +121,9 @@ pub fn run(dut: &mut dyn Dut, case: &TestCase, kernel: &Path, apps: &[&Path]) ->
         dut,
         requires: case.requires,
         timing,
+        output: String::new(),
         boot: timing.boot,
+        budget: None,
     };
     match case.steps.iter().try_for_each(|step| ctx.step(step)) {
         Ok(()) => TestOutcome::Passed,
@@ -106,20 +133,59 @@ pub fn run(dut: &mut dyn Dut, case: &TestCase, kernel: &Path, apps: &[&Path]) ->
     }
 }
 
-struct Ctx<'a> {
+/// State of a running test, which is passed to the code of [`Step::Within`].
+pub struct Ctx<'a> {
     dut: &'a mut dyn Dut,
     requires: &'static [Requirement],
     timing: &'static Timing,
+    /// Console output received by `Expect` steps since the last `Check`.
+    output: String,
     /// Boot time which the test has not waited for yet. This time is added to
     /// the timeout of the next wait.
     boot: Duration,
+    /// Budget remaining for the running `Within` step, if any.
+    budget: Option<Duration>,
 }
 
 impl Ctx<'_> {
     fn step(&mut self, step: &Step) -> Result<()> {
         match *step {
             Step::Expect(needle) => self.expect(needle).map(drop),
+            Step::Send(text) => self.send(text),
+            Step::Check(check) => check(&mem::take(&mut self.output), self.board()),
+            Step::Sleep(duration) => self.sleep(duration),
+            Step::Within(budget, run) => {
+                self.budget = Some(budget);
+                let result = run(self);
+                self.budget = None;
+                result
+            }
         }
+    }
+
+    /// Charge `time` against the budget of the running `Within` step.
+    ///
+    /// Outside of a `Within` step, costs are known statically and nothing is
+    /// charged.
+    fn charge(&mut self, time: Duration) -> Result<()> {
+        let Some(budget) = &mut self.budget else {
+            return Ok(());
+        };
+        match budget.checked_sub(time) {
+            Some(left) => {
+                *budget = left;
+                Ok(())
+            }
+            None => bail!(
+                "Within budget too short on {}: needs {time:?} more, {budget:?} left",
+                self.dut.board()
+            ),
+        }
+    }
+
+    /// Return the board the test runs on.
+    pub fn board(&self) -> &'static Board {
+        self.dut.board()
     }
 
     fn uart(&mut self) -> Result<&mut dyn Uart> {
@@ -132,9 +198,25 @@ impl Ctx<'_> {
 
     /// Wait for `needle` on the console. This returns the output up to and
     /// including `needle`.
-    fn expect(&mut self, needle: &str) -> Result<String> {
+    pub fn expect(&mut self, needle: &str) -> Result<String> {
+        self.charge(self.timing.expect)?;
         let timeout = self.timing.expect + mem::take(&mut self.boot);
-        self.uart()?.wait_for(needle, timeout)
+        let out = self.uart()?.wait_for(needle, timeout)?;
+        self.output.push_str(&out);
+        Ok(out)
+    }
+
+    /// Type `text` on the console.
+    pub fn send(&mut self, text: &str) -> Result<()> {
+        self.charge(typing_time(text))?;
+        self.uart()?.write_slowly(text.as_bytes(), TYPING_DELAY)
+    }
+
+    /// Sleep for `duration`.
+    pub fn sleep(&mut self, duration: Duration) -> Result<()> {
+        self.charge(duration)?;
+        std::thread::sleep(duration);
+        Ok(())
     }
 }
 
@@ -151,6 +233,9 @@ mod tests {
     }
 
     impl Uart for Console {
+        fn send(&mut self, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
         fn receive_until(&mut self, needle: &str, _: Duration) -> Result<String> {
             (self.output.take_through(needle)).ok_or_else(|| anyhow!("no {needle:?}"))
         }
@@ -187,6 +272,7 @@ mod tests {
             id: "test",
             requires,
             apps: &[],
+            unsupported: &[],
             steps,
         };
         let mut console = Console {
@@ -208,6 +294,55 @@ mod tests {
         assert_eq!(Expect("a").cost(timing()), timing().expect);
         assert_eq!(run_on("xay", requires, &[Expect("a")]), TestOutcome::Passed);
         assert_eq!(run_on("b", requires, &[Expect("a")]), failed("no \"a\""));
+    }
+
+    #[test]
+    fn costs_add_up() {
+        const STEPS: &[Step] = &[
+            Expect("a"),
+            Send("ab"),
+            Check(|_, _| Ok(())),
+            Sleep(Duration::from_secs(1)),
+            Expect("b"),
+            Within(Duration::from_secs(7), |_| Ok(())),
+        ];
+        let t = timing();
+        assert_eq!(
+            STEPS.iter().map(|step| step.cost(t)).sum::<Duration>(),
+            2 * t.expect + Duration::from_millis(20) + Duration::from_secs(8)
+        );
+    }
+
+    #[test]
+    fn check_sees_the_output_since_the_last_check() {
+        const STEPS: &[Step] = &[
+            Expect("a"),
+            Check(|out, _| (out == "a").then_some(()).ok_or_else(|| anyhow!("{out}"))),
+            Expect("b"),
+            Expect("c"),
+            Check(|out, _| (out == "bc").then_some(()).ok_or_else(|| anyhow!("{out}"))),
+        ];
+        assert_eq!(
+            run_on("abc", &[Requirement::Uart], STEPS),
+            TestOutcome::Passed
+        );
+    }
+
+    #[test]
+    fn within_charges_its_budget() {
+        const STEPS: &[Step] = &[Within(Duration::from_secs(4), |ctx| {
+            ctx.send("ab")?;
+            ctx.expect("a")?;
+            ctx.expect("b").map(drop)
+        })];
+        let expect = timing().expect;
+        let left = Duration::from_secs(4) - Duration::from_millis(20) - expect;
+        assert_eq!(
+            run_on("ab", &[Requirement::Uart], STEPS),
+            failed(&format!(
+                "Within budget too short on qemu_rv64_virt: needs {expect:?} more, {left:?} left"
+            ))
+        );
     }
 
     #[test]

@@ -10,5 +10,6 @@ static TEST: TestCase = TestCase {
     id: "hello_world",
     requires: &[Requirement::Uart],
     apps: &["c_hello"],
+    unsupported: &[],
     steps: &[Expect("Hello World!")],
 };

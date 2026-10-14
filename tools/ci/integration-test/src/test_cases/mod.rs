@@ -3,8 +3,9 @@
 // Copyright Tock Contributors 2026.
 
 mod step;
+mod util;
 
-pub use step::{Step, TestOutcome, run};
+pub use step::{Ctx, Step, TestOutcome, run};
 
 use crate::boards::{BOARDS, Board};
 
@@ -16,7 +17,24 @@ use crate::boards::{BOARDS, Board};
 #[linkme::distributed_slice]
 pub static TESTS: [TestCase];
 
+mod c_hello_and_printf_long;
+mod console;
+mod console_timeout;
+mod exit;
 mod hello_world;
+mod hello_world_process_console;
+mod ipc_rot13;
+mod lua_hello;
+mod malloc_test01;
+mod malloc_test02;
+mod process_console_help;
+mod process_console_list;
+mod process_console_restart;
+mod process_console_stop_start;
+mod sensors;
+mod stack_size_test01;
+mod stack_size_test02;
+mod unexpected_rx;
 
 /// Resource a test requires a board to provide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +61,10 @@ pub struct TestCase {
     pub requires: &'static [Requirement],
     /// libtock-c apps to install, as paths under libtock-c's `examples/`.
     pub apps: &'static [&'static str],
+    /// Boards on which the test is unsupported despite providing all of its
+    /// requirements (e.g., because of a known regression), along with the
+    /// reason for each.
+    pub unsupported: &'static [(&'static Board, &'static str)],
     /// Steps of the test, which are executed in order.
     pub steps: &'static [Step],
 }
@@ -78,6 +100,13 @@ impl TestCase {
         needs.dedup();
         needs.join(", ")
     }
+
+    /// Return the reason this test is unsupported on `board`, if it is.
+    pub fn unsupported_reason(&self, board: &Board) -> Option<&'static str> {
+        (self.unsupported.iter())
+            .find(|(b, _)| *b == board)
+            .map(|(_, reason)| *reason)
+    }
 }
 
 /// Serialization of a `&'static TestCase` as its [`id`](TestCase::id), for use
@@ -109,7 +138,7 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             let name = path.file_stem().unwrap().to_str().unwrap();
-            if !["mod", "step"].contains(&name) {
+            if !["mod", "step", "util"].contains(&name) {
                 assert!(
                     TESTS.iter().any(|t| t.id == name),
                     "{name}.rs registers no test with id {name:?}"
@@ -140,12 +169,22 @@ mod tests {
     fn console_steps_require_uart() {
         fn uses_console(step: &Step) -> bool {
             match *step {
-                Step::Expect(_) => true,
+                Step::Expect(_) | Step::Send(_) | Step::Check(_) => true,
+                Step::Sleep(_) | Step::Within(..) => false,
             }
         }
         for tc in TESTS {
             if tc.steps.iter().any(uses_console) {
                 assert!(tc.requires.contains(&Requirement::Uart), "{}", tc.id);
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_boards_are_boards_of_the_test() {
+        for tc in TESTS {
+            for (board, _) in tc.unsupported {
+                assert!(tc.boards().any(|b| b == *board), "{}", tc.id);
             }
         }
     }

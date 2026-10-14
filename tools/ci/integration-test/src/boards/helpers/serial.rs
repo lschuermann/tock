@@ -5,7 +5,7 @@
 use super::console_buffer::ConsoleBuffer;
 use crate::boards::Uart;
 use anyhow::{Context, Result};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 /// [`Uart`] backed by a physical board's serial port (exposed as a character
@@ -35,6 +35,11 @@ impl SerialUart {
 }
 
 impl Uart for SerialUart {
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        self.port.write_all(bytes)?;
+        Ok(())
+    }
+
     fn receive_until(&mut self, needle: &str, timeout: Duration) -> Result<String> {
         let deadline = Instant::now() + timeout;
         let mut chunk = [0u8; 256];

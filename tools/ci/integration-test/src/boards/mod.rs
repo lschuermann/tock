@@ -228,14 +228,29 @@ pub mod by_name {
 
 /// Console of a board.
 ///
-/// Implementations provide [`Uart::receive_until`]. Callers use
-/// [`Uart::wait_for`].
+/// Implementations provide [`Uart::send`] and [`Uart::receive_until`]. Callers
+/// use [`Uart::write_slowly`] and [`Uart::wait_for`].
 pub trait Uart {
+    /// Send `bytes` on the console.
+    fn send(&mut self, bytes: &[u8]) -> Result<()>;
     /// Wait up to `timeout` for `needle` on the console. This returns the
     /// output up to and including `needle`.
     fn receive_until(&mut self, needle: &str, timeout: Duration) -> Result<String>;
     /// Return all output received since the console was opened.
     fn transcript(&mut self) -> &[u8];
+
+    /// Send `bytes` one at a time, with `delay` after each byte.
+    ///
+    /// Consoles may drop input which arrives faster than they process it. This
+    /// logs the sent text once.
+    fn write_slowly(&mut self, bytes: &[u8], delay: Duration) -> Result<()> {
+        log::info!("  typing {:?}", String::from_utf8_lossy(bytes));
+        for byte in bytes {
+            self.send(std::slice::from_ref(byte))?;
+            std::thread::sleep(delay);
+        }
+        Ok(())
+    }
 
     /// Wait up to `timeout` for `needle` on the console. This behaves like
     /// [`Uart::receive_until`], and additionally logs the wait and the received
