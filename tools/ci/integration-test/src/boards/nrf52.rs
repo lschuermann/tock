@@ -22,6 +22,7 @@ pub static NRF52840DK: Board = Board {
     dir: "boards/nordic/nrf52840dk",
     kernel: "target/thumbv7em-none-eabi/release/nrf52840dk.bin",
     tock_targets: &["cortex-m4"],
+    features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
         boot: Duration::from_secs(5),
@@ -37,6 +38,7 @@ pub static NRF52DK: Board = Board {
     dir: "boards/nordic/nrf52dk",
     kernel: "target/thumbv7em-none-eabi/release/nrf52dk.bin",
     tock_targets: &["cortex-m4"],
+    features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
         boot: Duration::from_secs(5),

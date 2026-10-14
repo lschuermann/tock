@@ -7,7 +7,7 @@ mod util;
 
 pub use step::{Ctx, Step, TestOutcome, run};
 
-use crate::boards::{BOARDS, Board};
+use crate::boards::{BOARDS, Board, Feature};
 
 /// Collection of tests run by this end-to-end harness.
 ///
@@ -24,6 +24,8 @@ mod exit;
 mod hello_world;
 mod hello_world_process_console;
 mod ipc_rot13;
+mod led_odd;
+mod led_odd_tock_logo;
 mod lua_hello;
 mod malloc_test01;
 mod malloc_test02;
@@ -34,12 +36,14 @@ mod process_console_stop_start;
 mod sensors;
 mod stack_size_test01;
 mod stack_size_test02;
+mod tock_logo;
 mod unexpected_rx;
 
 /// Resource a test requires a board to provide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
     Uart,
+    Feature(Feature),
 }
 
 impl Requirement {
@@ -48,6 +52,7 @@ impl Requirement {
     pub fn describe(&self) -> String {
         match *self {
             Requirement::Uart => "console".to_string(),
+            Requirement::Feature(feature) => format!("{feature:?}"),
         }
     }
 }
@@ -153,6 +158,7 @@ mod tests {
             let tc = TESTS.iter().find(|t| t.id == id).unwrap();
             tc.boards().collect()
         };
+        assert_eq!(boards("led_odd"), [&qemu::RV64_VIRT]);
         assert_eq!(boards("hello_world").len(), BOARDS.len());
     }
 
@@ -170,7 +176,7 @@ mod tests {
         fn uses_console(step: &Step) -> bool {
             match *step {
                 Step::Expect(_) | Step::Send(_) | Step::Check(_) => true,
-                Step::Sleep(_) | Step::Within(..) => false,
+                Step::Screen(_) | Step::Sleep(_) | Step::Within(..) => false,
             }
         }
         for tc in TESTS {

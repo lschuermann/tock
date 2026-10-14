@@ -16,12 +16,14 @@
 //! path, independent of the speed of the device.
 
 use super::{Requirement, TestCase};
-use crate::boards::{Board, Dut, Timing, Uart};
-use anyhow::{Result, anyhow, bail, ensure};
+use crate::boards::{Board, Dut, Feature, Timing, Uart};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use fs_err as fs;
 use log::info;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::mem;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Delay after each byte typed on the console. Consoles may drop input which
@@ -37,6 +39,12 @@ pub enum Step {
     /// Check the console output received by `Expect` steps since the last
     /// `Check`.
     Check(fn(&str, &Board) -> Result<()>),
+    /// Check that the SHA-256 hash of the board's screen, as a PPM image,
+    /// equals the hash given for the board.
+    ///
+    /// The image is saved next to the test's console log, such that it can be
+    /// inspected and its hash recorded.
+    Screen(&'static [(&'static Board, &'static str)]),
     /// Sleep for the given duration.
     Sleep(Duration),
     /// Run procedural code, which may charge up to the given budget.
@@ -49,7 +57,7 @@ impl Step {
         match *self {
             Step::Expect(_) => timing.expect,
             Step::Send(text) => typing_time(text),
-            Step::Check(_) => Duration::ZERO,
+            Step::Check(_) | Step::Screen(_) => Duration::ZERO,
             Step::Sleep(duration) | Step::Within(duration, _) => duration,
         }
     }
@@ -103,8 +111,15 @@ impl TestOutcome {
 
 /// Flash `kernel` and `apps` onto `dut` and run the steps of `case`.
 ///
-/// Flashing failures are reported as infrastructure failures.
-pub fn run(dut: &mut dyn Dut, case: &TestCase, kernel: &Path, apps: &[&Path]) -> TestOutcome {
+/// Flashing failures are reported as infrastructure failures. Screens captured
+/// by the test are saved to `log_dir`.
+pub fn run(
+    dut: &mut dyn Dut,
+    case: &TestCase,
+    kernel: &Path,
+    apps: &[&Path],
+    log_dir: &Path,
+) -> TestOutcome {
     let timing = &dut.board().timing;
     let start = Instant::now();
 
@@ -117,6 +132,7 @@ pub fn run(dut: &mut dyn Dut, case: &TestCase, kernel: &Path, apps: &[&Path]) ->
     }
 
     info!("  running test steps...");
+    let screen = log_dir.join(format!("{}@{}.ppm", case.id, dut.board()));
     let mut ctx = Ctx {
         dut,
         requires: case.requires,
@@ -124,6 +140,7 @@ pub fn run(dut: &mut dyn Dut, case: &TestCase, kernel: &Path, apps: &[&Path]) ->
         output: String::new(),
         boot: timing.boot,
         budget: None,
+        screen,
     };
     match case.steps.iter().try_for_each(|step| ctx.step(step)) {
         Ok(()) => TestOutcome::Passed,
@@ -145,6 +162,8 @@ pub struct Ctx<'a> {
     boot: Duration,
     /// Budget remaining for the running `Within` step, if any.
     budget: Option<Duration>,
+    /// Path to save the board's screen to.
+    screen: PathBuf,
 }
 
 impl Ctx<'_> {
@@ -153,6 +172,7 @@ impl Ctx<'_> {
             Step::Expect(needle) => self.expect(needle).map(drop),
             Step::Send(text) => self.send(text),
             Step::Check(check) => check(&mem::take(&mut self.output), self.board()),
+            Step::Screen(hashes) => self.check_screen(hashes),
             Step::Sleep(duration) => self.sleep(duration),
             Step::Within(budget, run) => {
                 self.budget = Some(budget);
@@ -206,6 +226,32 @@ impl Ctx<'_> {
         Ok(out)
     }
 
+    /// Check that the SHA-256 hash of the board's screen equals the entry for
+    /// the board in `hashes`, and save the screen.
+    fn check_screen(&mut self, hashes: &[(&Board, &str)]) -> Result<()> {
+        ensure!(
+            (self.requires).contains(&Requirement::Feature(Feature::Display)),
+            "test checked the screen without requiring `Display`"
+        );
+        info!("  checking the screen");
+        let image = self.dut.screen()?;
+        let path = &self.screen;
+        fs::write(path, &image).context("failed to save the screen")?;
+        let hash = format!("{:x}", Sha256::digest(&image));
+        match hashes.iter().find(|(board, _)| *board == self.board()) {
+            Some((_, expected)) if *expected == hash => Ok(()),
+            Some((_, expected)) => bail!(
+                "the screen ({}) has SHA-256 {hash}, expected {expected}",
+                path.display()
+            ),
+            None => bail!(
+                "no screen hash for {}, the screen ({}) has SHA-256 {hash}",
+                self.board(),
+                path.display()
+            ),
+        }
+    }
+
     /// Type `text` on the console.
     pub fn send(&mut self, text: &str) -> Result<()> {
         self.charge(typing_time(text))?;
@@ -257,6 +303,9 @@ mod tests {
         fn uart(&mut self) -> Option<&mut dyn Uart> {
             Some(self)
         }
+        fn screen(&mut self) -> Result<Vec<u8>> {
+            Ok(b"P6 1 1 255 abc".to_vec())
+        }
     }
 
     fn timing() -> &'static Timing {
@@ -279,7 +328,8 @@ mod tests {
             output: ConsoleBuffer::new(),
         };
         console.output.push(output.as_bytes());
-        run(&mut console, &case, Path::new("kernel"), &[])
+        let logs = tempfile::tempdir().unwrap();
+        run(&mut console, &case, Path::new("kernel"), &[], logs.path())
     }
 
     fn failed(reason: &str) -> TestOutcome {
@@ -343,6 +393,19 @@ mod tests {
                 "Within budget too short on qemu_rv64_virt: needs {expect:?} more, {left:?} left"
             ))
         );
+    }
+
+    #[test]
+    fn screens_match_their_board_hash() {
+        const DISPLAY: &[Requirement] = &[Requirement::Feature(Feature::Display)];
+        // SHA-256 hash of the screen of the mock board:
+        const HASH: &str = "6ef8e159c1ceb016f798e252c1146425e54f6f2b940e92713a9afa9493165dfc";
+        const MATCHING: &[Step] = &[Screen(&[(&qemu::RV64_VIRT, HASH)])];
+        assert_eq!(run_on("", DISPLAY, MATCHING), TestOutcome::Passed);
+        let TestOutcome::Failed { reason } = run_on("", DISPLAY, &[Screen(&[])]) else {
+            panic!("passed without a hash for the board");
+        };
+        assert!(reason.ends_with(&format!("has SHA-256 {HASH}")), "{reason}");
     }
 
     #[test]

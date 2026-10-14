@@ -14,7 +14,7 @@
 
 use crate::boards::helpers::console_buffer::ConsoleBuffer;
 use crate::boards::helpers::{command, tockloader};
-use crate::boards::{BOARDS, Board, Dut, Open, Timing, Uart};
+use crate::boards::{BOARDS, Board, Dut, Feature, Open, Timing, Uart};
 use anyhow::{Context, Result, anyhow, bail};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -38,6 +38,7 @@ pub static RV64_VIRT: Board = Board {
     dir: "boards/configurations/qemu_rv64_virt/qemu_rv64_virt-test-ci",
     kernel: "target/riscv64imac-unknown-none-elf/release/qemu_rv64_virt-test-ci.bin",
     tock_targets: &["$(QEMU_RV64_VIRT_TOCK_TARGETS)"],
+    features: &[Feature::Display],
     timing: TIMING,
     open: Open::Virtual(|tock| {
         Box::new(Qemu::new(
@@ -59,6 +60,7 @@ pub static HIFIVE1: Board = Board {
     dir: "boards/hifive1",
     kernel: "target/riscv32imac-unknown-none-elf/release/hifive1.bin",
     tock_targets: &["rv32imac|rv32imac.0x20040080.0x80002800|0x20040080|0x80002800"],
+    features: &[],
     timing: TIMING,
     open: Open::Virtual(|tock| {
         Box::new(Qemu::new(
@@ -238,6 +240,13 @@ impl Dut for Qemu {
 
     fn uart(&mut self) -> Option<&mut dyn Uart> {
         Some(self)
+    }
+
+    fn screen(&mut self) -> Result<Vec<u8>> {
+        let dir = self.dir.as_ref().context("QEMU is not running")?;
+        let path = dir.path().join("screen.ppm");
+        self.qmp("screendump", json!({ "filename": path }))?;
+        Ok(fs_err::read(&path)?)
     }
 }
 

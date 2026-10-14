@@ -3,6 +3,10 @@
 // Copyright Tock Contributors 2026.
 
 use anyhow::{Context, Result, bail};
+use std::time::Duration;
+
+/// Time apps take to draw on the screen once they run.
+pub const DRAW_TIME: Duration = Duration::from_millis(500);
 
 /// Find the last row of `process` in the process console `list` output in
 /// `out`, and return the process's PID and state.

@@ -193,7 +193,8 @@ fn run_tests(
 
         let outcome = match open_dut(planned, tock, duts) {
             Ok(mut dut) => {
-                let outcome = crate::test_cases::run(&mut *dut, planned.test, &kernel, &apps);
+                let outcome =
+                    crate::test_cases::run(&mut *dut, planned.test, &kernel, &apps, log_dir);
                 if let Some(uart) = dut.uart() {
                     write_log(log_dir, &id, uart.transcript());
                 }

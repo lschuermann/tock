@@ -119,6 +119,7 @@ pub fn host_predicate(plan: &Plan) -> String {
 fn dut_condition(requirement: Requirement) -> String {
     match requirement {
         Requirement::Uart => "has(d.console)".to_string(),
+        Requirement::Feature(_) => "true".to_string(),
     }
 }
 

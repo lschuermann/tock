@@ -43,6 +43,8 @@ pub struct Board {
     /// Entries can reference variables from libtock-c's `Configuration.mk` as
     /// those get expanded by the call to `make`.
     pub tock_targets: &'static [&'static str],
+    /// Features which the board provides to tests, beyond its console.
+    pub features: &'static [Feature],
     /// Upper bounds on the duration of certain board-specific operations.
     pub timing: Timing,
     /// Open the board for running tests.
@@ -88,6 +90,7 @@ impl AttachedDut {
     pub fn satisfies(&self, requirement: Requirement) -> bool {
         match requirement {
             Requirement::Uart => self.config.console.is_some(),
+            Requirement::Feature(Feature::Display) => true,
         }
     }
 }
@@ -157,6 +160,14 @@ pub struct Timing {
     pub expect: Duration,
 }
 
+/// Feature of a board, beyond its console, which tests may require.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    /// The board has a screen, which its backend captures through
+    /// [`Dut::screen`].
+    Display,
+}
+
 impl Board {
     /// Look up a board in [`BOARDS`] by name.
     ///
@@ -188,6 +199,7 @@ impl Board {
     pub fn provides(&self, requirement: Requirement) -> bool {
         match requirement {
             Requirement::Uart => true,
+            Requirement::Feature(feature) => self.features.contains(&feature),
         }
     }
 }
@@ -281,6 +293,13 @@ pub trait Dut {
     fn reset(&mut self) -> Result<()>;
     /// Return the device's console, or `None` if the device has no console.
     fn uart(&mut self) -> Option<&mut dyn Uart>;
+    /// Capture the device's screen as a PPM image.
+    ///
+    /// The default implementation returns an error, for devices without a
+    /// screen.
+    fn screen(&mut self) -> Result<Vec<u8>> {
+        bail!("{} has no screen", self.board())
+    }
 }
 
 #[cfg(test)]
