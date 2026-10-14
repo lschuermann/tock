@@ -7,7 +7,7 @@ mod util;
 
 pub use step::{Ctx, Step, TestOutcome, run};
 
-use crate::boards::{BOARDS, Board, Feature};
+use crate::boards::{BOARDS, Board, Feature, GpioMode};
 
 /// Collection of tests run by this end-to-end harness.
 ///
@@ -17,11 +17,15 @@ use crate::boards::{BOARDS, Board, Feature};
 #[linkme::distributed_slice]
 pub static TESTS: [TestCase];
 
+mod blink;
+mod blink_c_hello_buttons;
 mod button_print;
+mod buttons;
 mod c_hello_and_printf_long;
 mod console;
 mod console_timeout;
 mod exit;
+mod gpio_original;
 mod hello_world;
 mod hello_world_process_console;
 mod ipc_rot13;
@@ -30,22 +34,31 @@ mod led_odd_tock_logo;
 mod lua_hello;
 mod malloc_test01;
 mod malloc_test02;
+mod mpu_walk_region_flash;
+mod mpu_walk_region_memory;
+mod multi_alarm_test;
 mod process_console_help;
 mod process_console_list;
 mod process_console_restart;
 mod process_console_stop_start;
+mod scheduler_whileone_blink;
 mod sensors;
 mod stack_size_test01;
 mod stack_size_test02;
 mod tock_logo;
+mod tutorial_ipc_rng_led;
 mod unexpected_rx;
 
 /// Resource a test requires a board to provide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
     Uart,
-    /// GPIO with the given logical name (see [`Board::pins`]).
-    Gpio(&'static str),
+    /// GPIO with the logical name `name` (see [`Board::pins`]), which the
+    /// host uses in `mode`.
+    Gpio {
+        name: &'static str,
+        mode: GpioMode,
+    },
     Feature(Feature),
 }
 
@@ -55,8 +68,8 @@ impl Requirement {
     pub fn describe(&self, board: &Board) -> String {
         match *self {
             Requirement::Uart => "console".to_string(),
-            Requirement::Gpio(name) => match board.pin(name) {
-                Some(pin) => format!("{name} at {pin}"),
+            Requirement::Gpio { name, mode } => match board.pin(name) {
+                Some(pin) => format!("{name} at {pin} ({})", mode.as_str()),
                 None => format!("{name} (not mapped for {board})"),
             },
             Requirement::Feature(feature) => format!("{feature:?}"),
@@ -161,12 +174,16 @@ mod tests {
 
     #[test]
     fn boards_follow_from_requirements() {
-        let boards = |id: &str| -> Vec<_> {
+        let boards = |id: &str| -> Vec<&str> {
             let tc = TESTS.iter().find(|t| t.id == id).unwrap();
-            tc.boards().collect()
+            let mut names: Vec<&str> = tc.boards().map(|b| b.name).collect();
+            names.sort();
+            names
         };
-        assert_eq!(boards("led_odd"), [&qemu::RV64_VIRT]);
-        assert_eq!(boards("button_print"), [&qemu::RV64_VIRT]);
+        assert_eq!(boards("led_odd"), ["qemu_rv64_virt"]);
+        assert_eq!(boards("button_print"), ["nrf52840dk", "qemu_rv64_virt"]);
+        // This test requires `led0` and `led1`, which only these boards map:
+        assert_eq!(boards("scheduler_whileone_blink"), ["nrf52840dk"]);
         assert_eq!(boards("hello_world").len(), BOARDS.len());
     }
 
@@ -179,6 +196,8 @@ mod tests {
         assert_eq!(ids.len(), len, "a test id is used twice");
     }
 
+    /// Check that steps which use the console require `Uart`. `Within` steps
+    /// check the resources they use while they run.
     #[test]
     fn console_steps_require_uart() {
         fn uses_console(step: &Step) -> bool {

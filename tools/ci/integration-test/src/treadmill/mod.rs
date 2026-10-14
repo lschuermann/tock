@@ -780,10 +780,15 @@ mod tests {
     #[test]
     fn leases_cover_setup_and_each_test_with_its_flashing() {
         // On the nRF52840DK, flashing takes up to 30 s and booting 5 s. Then,
-        // `hello_world` waits up to 3 s for its output:
+        // `hello_world` waits up to 3 s for its output, and `blink` checks the
+        // LEDs for up to 5 s:
         assert_eq!(
             lease_for(&plan(&["hello_world"]), SETUP_REUSED_JOB),
             SETUP_REUSED_JOB + Duration::from_secs(38) + PER_TEST_MARGIN
+        );
+        assert_eq!(
+            lease_for(&plan(&["hello_world", "blink"]), SETUP_NEW_JOB),
+            SETUP_NEW_JOB + Duration::from_secs(38 + 40) + 2 * PER_TEST_MARGIN
         );
         assert_eq!(lease_arg(Duration::from_millis(90_001)), "91s");
         assert_eq!(human(Duration::from_secs(725)), "12m 5s");

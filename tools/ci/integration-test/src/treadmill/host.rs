@@ -4,6 +4,7 @@
 
 //! Matching of the hosts which can run the tests of a plan.
 
+use crate::boards::Board;
 use crate::host_spec::HostSpec;
 use crate::plan::{Plan, PlannedTest};
 use crate::test_cases::Requirement;
@@ -104,7 +105,13 @@ pub fn host_predicate(plan: &Plan) -> String {
         .map(|planned| {
             let board = planned.board;
             let conditions: Vec<String> = std::iter::once(format!("d.board == {:?}", board.name))
-                .chain(planned.test.requires.iter().map(|r| dut_condition(*r)))
+                .chain(
+                    planned
+                        .test
+                        .requires
+                        .iter()
+                        .map(|r| dut_condition(*r, board)),
+                )
                 .collect();
             format!("host.duts.exists(d, {})", conditions.join(" && "))
         })
@@ -112,16 +119,22 @@ pub fn host_predicate(plan: &Plan) -> String {
     clauses.into_iter().collect::<Vec<_>>().join(" && ")
 }
 
-/// Return a CEL condition on a DUT `d`, on the host `host`, which holds if the
-/// DUT satisfies `requirement`.
+/// Return a CEL condition on a DUT `d` of `board`, on the host `host`, which
+/// holds if the DUT satisfies `requirement`.
 ///
 /// This condition must match [`crate::boards::AttachedDut::satisfies`].
-fn dut_condition(requirement: Requirement) -> String {
+fn dut_condition(requirement: Requirement, board: &Board) -> String {
     match requirement {
         Requirement::Uart => "has(d.console)".to_string(),
-        // Host specs do not wire GPIOs to the host yet (see
-        // `DutConfig::satisfies`):
-        Requirement::Gpio(_) => "false".to_string(),
+        Requirement::Gpio { name, mode } => match board.pin(name) {
+            // Only GPIOs which `DutGpios` can drive:
+            Some(pin) => format!(
+                "{pin:?} in d.gpio && {:?} in d.gpio[{pin:?}].modes && \
+                 host.gpio_controllers[d.gpio[{pin:?}].controller].driver == \"linux-gpiochip\"",
+                mode.as_str()
+            ),
+            None => "false".to_string(),
+        },
         Requirement::Feature(_) => "true".to_string(),
     }
 }
@@ -129,7 +142,7 @@ fn dut_condition(requirement: Requirement) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boards::{Board, nrf52, qemu};
+    use crate::boards::{nrf52, qemu};
     use crate::test_cases::TestCase;
 
     fn planned(id: &str, board: &'static Board) -> PlannedTest {
@@ -143,7 +156,7 @@ mod tests {
 
     #[test]
     fn tests_no_host_can_run_are_unrunnable_and_say_why() {
-        // One host, with an nRF52840DK which has a console:
+        // One host, with an nRF52840DK which has a console but no GPIOs:
         let fleet = [HostSpec::from_value(serde_json::json!({
             "spec_version": "v2",
             "duts": [{"board": "nrf52840dk",
@@ -152,15 +165,10 @@ mod tests {
         .unwrap()];
         let nrf = &nrf52::NRF52840DK;
         assert_eq!(unrunnable(&planned("hello_world", nrf), &fleet), None);
-        // A host whose nRF52840DK has no console:
-        let no_console = [HostSpec::from_value(serde_json::json!({
-            "spec_version": "v2",
-            "duts": [{"board": "nrf52840dk"}]
-        }))
-        .unwrap()];
         assert_eq!(
-            unrunnable(&planned("hello_world", nrf), &no_console).unwrap(),
-            "no Treadmill host has a nrf52840dk DUT with all of: console"
+            unrunnable(&planned("blink", nrf), &fleet).unwrap(),
+            "no Treadmill host has a nrf52840dk DUT with all of: \
+             led0 at P0.13 (digital_in), led1 at P0.14 (digital_in)"
         );
         let qemu = planned("hello_world", &qemu::RV64_VIRT);
         assert!(unrunnable(&qemu, &fleet).unwrap().contains("virtual"));

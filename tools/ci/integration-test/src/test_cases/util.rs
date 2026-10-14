@@ -2,12 +2,39 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2026.
 
-use super::Requirement;
-use anyhow::{Context, Result, bail};
+use super::{Ctx, Requirement};
+use crate::boards::GpioMode;
+use anyhow::{Context, Result, bail, ensure};
 use std::time::Duration;
 
 /// Requirement of a button with the logical name `button0`.
-pub const BUTTON0: Requirement = Requirement::Gpio("button0");
+pub const BUTTON0: Requirement = Requirement::Gpio {
+    name: "button0",
+    mode: GpioMode::DigitalOut,
+};
+/// Requirement of a button with the logical name `button1`.
+pub const BUTTON1: Requirement = Requirement::Gpio {
+    name: "button1",
+    mode: GpioMode::DigitalOut,
+};
+/// Requirement of an LED with the logical name `led0`.
+pub const LED0: Requirement = Requirement::Gpio {
+    name: "led0",
+    mode: GpioMode::DigitalIn,
+};
+/// Requirement of an LED with the logical name `led1`.
+pub const LED1: Requirement = Requirement::Gpio {
+    name: "led1",
+    mode: GpioMode::DigitalIn,
+};
+/// Requirement of the userspace GPIO pin 0, which the host reads.
+pub const GPIO0: Requirement = Requirement::Gpio {
+    name: "gpio0",
+    mode: GpioMode::DigitalIn,
+};
+
+/// Maximum deviation of an observed GPIO edge from its expected time.
+pub const EDGE_TOLERANCE: Duration = Duration::from_millis(25);
 
 /// Time apps take to draw on the screen once they run.
 pub const DRAW_TIME: Duration = Duration::from_millis(500);
@@ -43,6 +70,50 @@ pub fn check_process_state(out: &str, process: &str, state: &str) -> Result<()> 
         (_, s) if s == state => Ok(()),
         (_, s) => bail!("expected process {process} to be {state}, got {s}"),
     }
+}
+
+/// Convert `times` to whole milliseconds, for messages.
+pub fn millis(times: &[Duration]) -> Vec<u128> {
+    times.iter().map(Duration::as_millis).collect()
+}
+
+/// Check that `edges` match `expected` one-to-one, within [`EDGE_TOLERANCE`].
+pub fn check_edge_times(
+    pin: &str,
+    edges: &[Duration],
+    expected: impl IntoIterator<Item = Duration>,
+) -> Result<()> {
+    let expected: Vec<Duration> = expected.into_iter().collect();
+    let matches = edges.len() == expected.len()
+        && (edges.iter().zip(&expected)).all(|(edge, want)| edge.abs_diff(*want) <= EDGE_TOLERANCE);
+    log::debug!("  {pin}: edges at {:?} ms", millis(edges));
+    ensure!(
+        matches,
+        "{pin}: expected edges at {:?} ms, observed {:?} ms",
+        millis(&expected),
+        millis(edges)
+    );
+    Ok(())
+}
+
+/// Make the `mpu_walk_region` app walk past the end of `region` (`flash` or
+/// `memory`), and check that this faults.
+///
+/// The app walks both regions in turn, and overruns a region if `button0` is
+/// held while it starts to walk it.
+pub fn check_mpu_walk_region_overrun_fault(ctx: &mut Ctx, other: &str, region: &str) -> Result<()> {
+    ctx.expect("[TEST] MPU Walk Regions")?;
+    // The app reads the button before announcing a walk. Thus, pressing it
+    // after the announcement only affects the following walk:
+    ctx.expect(&format!("Walking {other}"))?;
+    ctx.press("button0")?;
+    let walk = ctx.expect("! Will overrun")?;
+    if !walk.contains(&format!("Walking {region}")) || walk.contains(&format!("Walking {other}")) {
+        bail!("the app did not overrun {region} after walking {other}");
+    }
+    ctx.expect("mpu_walk_region had a fault")?;
+    ctx.expect("---| Cortex-M Fault Status |---")?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -23,4 +23,5 @@ sha2 = "0.10"
 tempfile = "3"
 nix = { version = "0.29", features = ["signal"] }
 serialport = { version = "4", default-features = false }
+gpiocdev = "0.8.0"
 linkme = "0.3"

@@ -296,6 +296,10 @@ impl Gpio for Qemu {
         Ok(())
     }
 
+    fn read(&mut self) -> Result<bool> {
+        Err(anyhow!("a key cannot be read"))
+    }
+
     fn active_high(&self) -> bool {
         true
     }

@@ -31,6 +31,8 @@ use std::time::{Duration, Instant};
 const TYPING_DELAY: Duration = Duration::from_millis(10);
 /// Time for the device to react to a change of a GPIO input.
 pub const SETTLE: Duration = Duration::from_millis(50);
+/// Interval at which GPIOs are polled.
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy)]
 pub enum Step {
@@ -143,6 +145,7 @@ pub fn run(
         boot: timing.boot,
         budget: None,
         screen,
+        retrying: false,
     };
     let steps = |ctx: &mut Ctx| case.steps.iter().try_for_each(|step| ctx.step(step));
     match ctx.release_all().and_then(|()| steps(&mut ctx)) {
@@ -163,10 +166,14 @@ pub struct Ctx<'a> {
     /// Boot time which the test has not waited for yet. This time is added to
     /// the timeout of the next wait.
     boot: Duration,
-    /// Budget remaining for the running `Within` step, if any.
+    /// Budget remaining for the running `Within` step or [`Ctx::retry`], if
+    /// any.
     budget: Option<Duration>,
     /// Path to save the board's screen to.
     screen: PathBuf,
+    /// Whether [`Ctx::retry`] is running, which reports an exhausted budget as
+    /// a timeout of the retried action.
+    retrying: bool,
 }
 
 impl Ctx<'_> {
@@ -199,6 +206,7 @@ impl Ctx<'_> {
                 *budget = left;
                 Ok(())
             }
+            None if self.retrying => bail!("did not succeed within its time"),
             None => bail!(
                 "Within budget too short on {}: needs {time:?} more, {budget:?} left",
                 self.dut.board()
@@ -268,11 +276,37 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Call `attempt` until it returns `true`, for up to `time`.
+    ///
+    /// Right after the board was flashed or reset, the time also includes the
+    /// boot time of the board.
+    pub fn retry(
+        &mut self,
+        time: Duration,
+        mut attempt: impl FnMut(&mut Ctx) -> Result<bool>,
+    ) -> Result<()> {
+        self.charge(time)?;
+        let time = time + mem::take(&mut self.boot);
+        let outer = self.budget.replace(time);
+        self.retrying = true;
+        let start = Instant::now();
+        let result = loop {
+            match attempt(self) {
+                Ok(false) if start.elapsed() < time => {}
+                Ok(false) => break Err(anyhow!("did not succeed within {time:?}")),
+                done => break done.map(drop),
+            }
+        };
+        self.retrying = false;
+        self.budget = outer;
+        result
+    }
+
     /// Return the GPIO with the logical name `name`, which the test must
     /// require.
     fn gpio(&mut self, name: &str) -> Result<&mut dyn Gpio> {
-        let required =
-            (self.requires.iter()).any(|r| matches!(r, Requirement::Gpio(n) if *n == name));
+        let required = (self.requires.iter())
+            .any(|r| matches!(r, Requirement::Gpio { name: n, .. } if *n == name));
         ensure!(required, "test used GPIO {name:?} without requiring it");
         (self.dut.gpio(name)).with_context(|| format!("board has no GPIO {name:?}"))
     }
@@ -281,11 +315,25 @@ impl Ctx<'_> {
     /// buttons.
     fn release_all(&mut self) -> Result<()> {
         for requirement in self.requires {
-            if let Requirement::Gpio(name) = requirement {
+            if let Requirement::Gpio { name, .. } = requirement {
                 self.release(name)?;
             }
         }
         Ok(())
+    }
+
+    /// Read the level of `pin`.
+    pub fn read(&mut self, pin: &str) -> Result<bool> {
+        self.gpio(pin)?.read()
+    }
+
+    /// Read the levels of all `pins`.
+    pub fn read_all<const N: usize>(&mut self, pins: [&str; N]) -> Result<[bool; N]> {
+        let mut levels = [false; N];
+        for (level, pin) in levels.iter_mut().zip(pins) {
+            *level = self.read(pin)?;
+        }
+        Ok(levels)
     }
 
     /// Press `button` by driving its GPIO to its active level.
@@ -304,6 +352,71 @@ impl Ctx<'_> {
     /// use a lower I/O voltage than the host.
     pub fn release(&mut self, button: &str) -> Result<()> {
         self.gpio(button)?.set_mode(GpioMode::DigitalIn)
+    }
+
+    /// Press and release `button`, and let the device react to each.
+    pub fn click(&mut self, button: &str) -> Result<()> {
+        self.press(button)?;
+        self.sleep(SETTLE)?;
+        self.release(button)?;
+        self.sleep(SETTLE)
+    }
+
+    /// Wait up to `timeout` for `pin` to change its level, and return the time
+    /// this took.
+    ///
+    /// Right after the board was flashed or reset, the timeout also includes
+    /// the boot time of the board.
+    pub fn wait_edge(&mut self, pin: &str, timeout: Duration) -> Result<Duration> {
+        self.charge(timeout)?;
+        let timeout = timeout + mem::take(&mut self.boot);
+        let start = Instant::now();
+        let initial = self.read(pin)?;
+        while self.read(pin)? == initial {
+            if start.elapsed() > timeout {
+                bail!("{pin} did not change within {timeout:?}");
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Ok(start.elapsed())
+    }
+
+    /// Sample `pins` for `duration`, and return the times (relative to the
+    /// start) at which each pin changed its level.
+    pub fn edges<const N: usize>(
+        &mut self,
+        pins: [&str; N],
+        duration: Duration,
+    ) -> Result<[Vec<Duration>; N]> {
+        self.edges_until(pins, duration, |_| false)
+    }
+
+    /// Sample `pins` like [`Ctx::edges`], and stop early once `done` returns
+    /// `true`.
+    pub fn edges_until<const N: usize>(
+        &mut self,
+        pins: [&str; N],
+        duration: Duration,
+        done: impl Fn(&[Vec<Duration>; N]) -> bool,
+    ) -> Result<[Vec<Duration>; N]> {
+        self.charge(duration)?;
+        info!(
+            "  recording edges on {} for up to {duration:?}",
+            pins.join(", ")
+        );
+        let mut last = self.read_all(pins)?;
+        let mut edges = [const { Vec::new() }; N];
+        let start = Instant::now();
+        while start.elapsed() < duration && !done(&edges) {
+            let levels = self.read_all(pins)?;
+            let t = start.elapsed();
+            for i in (0..N).filter(|&i| levels[i] != last[i]) {
+                edges[i].push(t);
+            }
+            last = levels;
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Ok(edges)
     }
 }
 
@@ -450,6 +563,24 @@ mod tests {
             panic!("passed without a hash for the board");
         };
         assert!(reason.ends_with(&format!("has SHA-256 {HASH}")), "{reason}");
+    }
+
+    #[test]
+    fn retry_stops_at_its_time() {
+        // Wait for "a" first, such that the retry does not include the boot
+        // time:
+        const STEPS: &[Step] = &[
+            Expect("a"),
+            Within(Duration::from_secs(1), |ctx| {
+                ctx.retry(Duration::from_millis(30), |ctx| {
+                    ctx.sleep(SETTLE).map(|()| false)
+                })
+            }),
+        ];
+        assert_eq!(
+            run_on("a", &[Requirement::Uart], STEPS),
+            failed("did not succeed within its time")
+        );
     }
 
     #[test]

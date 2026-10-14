@@ -7,6 +7,7 @@
 //! Uses `openocd` to flash the boards, and connects to the target using the
 //! J-Link's serial port.
 
+use crate::boards::helpers::dut_gpios::DutGpios;
 use crate::boards::helpers::serial::SerialUart;
 use crate::boards::helpers::{command, openocd, tockloader};
 use crate::boards::{BOARDS, Board, Dut, DutConfig, Gpio, Open, Timing, Uart};
@@ -22,7 +23,14 @@ pub static NRF52840DK: Board = Board {
     dir: "boards/nordic/nrf52840dk",
     kernel: "target/thumbv7em-none-eabi/release/nrf52840dk.bin",
     tock_targets: &["cortex-m4"],
-    pins: &[],
+    pins: &[
+        ("led0", "P0.13"),
+        ("led1", "P0.14"),
+        ("button0", "P0.11"),
+        ("button1", "P0.12"),
+        // Userspace GPIO pin 0:
+        ("gpio0", "P1.01"),
+    ],
     features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
@@ -57,6 +65,7 @@ pub struct Nrf52Board {
     board: &'static Board,
     dut: DutConfig,
     console: Option<SerialUart>,
+    gpios: DutGpios,
 }
 
 impl Nrf52Board {
@@ -65,6 +74,7 @@ impl Nrf52Board {
             board,
             dut,
             console: None,
+            gpios: DutGpios::default(),
         }
     }
 
@@ -121,6 +131,7 @@ impl Dut for Nrf52Board {
 
     fn reset(&mut self) -> Result<()> {
         self.console = None;
+        self.gpios.close();
         Ok(())
     }
 
@@ -128,7 +139,7 @@ impl Dut for Nrf52Board {
         self.console.as_mut().map(|c| c as &mut dyn Uart)
     }
 
-    fn gpio(&mut self, _name: &str) -> Option<&mut dyn Gpio> {
-        None
+    fn gpio(&mut self, name: &str) -> Option<&mut dyn Gpio> {
+        self.gpios.get(self.board, &self.dut, name)
     }
 }

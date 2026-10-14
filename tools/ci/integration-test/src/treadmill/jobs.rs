@@ -518,8 +518,8 @@ mod tests {
             "tock-integration-test - hello_world on nrf52840dk"
         );
         assert_eq!(
-            job_label(&plan(&["hello_world"]), Some(3)),
-            "tock-integration-test (run 3) - hello_world on nrf52840dk"
+            job_label(&plan(&["hello_world", "blink"]), Some(3)),
+            "tock-integration-test (run 3) - 2 tests on nrf52840dk (blink, hello_world)"
         );
     }
 

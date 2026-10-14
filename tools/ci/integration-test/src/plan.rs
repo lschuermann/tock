@@ -495,6 +495,10 @@ mod tests {
     #[test]
     fn anyboard_picks_one_board_preferring_those_already_used() {
         assert_eq!(select(&["hello_world@anyboard"]).len(), 1);
+        assert_eq!(
+            select(&["blink@nrf52840dk", "hello_world@anyboard"]),
+            ["blink@nrf52840dk", "hello_world@nrf52840dk"]
+        );
         // A test which another selector already includes is not added again:
         assert_eq!(
             select(&["hello_world@nrf52840dk", "hello_world@anyboard"]),

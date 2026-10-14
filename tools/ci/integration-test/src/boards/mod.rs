@@ -6,8 +6,10 @@ pub mod helpers;
 pub mod nrf52;
 pub mod qemu;
 
+use crate::host_spec::GpioPinSpec;
 use crate::test_cases::{Requirement, TestCase};
 use anyhow::{Context, Result, anyhow, bail};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -44,7 +46,8 @@ pub struct Board {
     /// those get expanded by the call to `make`.
     pub tock_targets: &'static [&'static str],
     /// Logical names of the board's GPIOs, mapped to the backend's name for
-    /// each (e.g., the QEMU key which stands in for a button).
+    /// each (e.g., the pin name in the board's schematic, as used in host
+    /// specs, or the QEMU key which stands in for a button).
     pub pins: &'static [(&'static str, &'static str)],
     /// Features which the board provides to tests, beyond its console and
     /// GPIOs.
@@ -67,6 +70,8 @@ pub enum Open {
 }
 
 /// Physical board attached to this host.
+///
+/// Only a host spec can wire GPIOs of the board to the host.
 #[derive(Debug, Clone)]
 pub struct AttachedDut {
     pub board: &'static Board,
@@ -94,8 +99,13 @@ impl AttachedDut {
     pub fn satisfies(&self, requirement: Requirement) -> bool {
         match requirement {
             Requirement::Uart => self.config.console.is_some(),
-            // Neither `--dut` nor host specs wire GPIOs to the host yet:
-            Requirement::Gpio(_) => false,
+            Requirement::Gpio { name, mode } => (self.board.pin(name))
+                .and_then(|pin| self.config.gpio.get(pin))
+                .is_some_and(|pin| {
+                    pin.modes.iter().any(|m| m == mode.as_str())
+                        && (pin.controller_spec.as_ref())
+                            .is_some_and(|c| c.driver == "linux-gpiochip")
+                }),
             Requirement::Feature(Feature::Display) => true,
         }
     }
@@ -110,6 +120,9 @@ pub struct DutConfig {
     /// Path of the serial port of the board's UART console (e.g.,
     /// `/dev/ttyACM0`).
     pub console: Option<String>,
+    /// GPIOs of the board which are wired to the host, by the board's own pin
+    /// name (e.g., `P0.13`).
+    pub gpio: BTreeMap<String, GpioPinSpec>,
 }
 
 impl DutConfig {
@@ -205,7 +218,7 @@ impl Board {
     pub fn provides(&self, requirement: Requirement) -> bool {
         match requirement {
             Requirement::Uart => true,
-            Requirement::Gpio(name) => self.pin(name).is_some(),
+            Requirement::Gpio { name, .. } => self.pin(name).is_some(),
             Requirement::Feature(feature) => self.features.contains(&feature),
         }
     }
@@ -290,22 +303,35 @@ pub trait Uart {
     }
 }
 
-/// Direction of a GPIO, as seen from the device.
+/// Mode of a GPIO, as seen from the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpioMode {
     DigitalIn,
     DigitalOut,
 }
 
-/// GPIO of a device, driven by the host.
+impl GpioMode {
+    /// Return the name of the mode in the `modes` of a GPIO in a host spec.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GpioMode::DigitalIn => "digital_in",
+            GpioMode::DigitalOut => "digital_out",
+        }
+    }
+}
+
+/// GPIO of a device, driven or read by the host.
 ///
-/// Implementations provide [`Gpio::configure`] and [`Gpio::drive`]. Callers
-/// use [`Gpio::set_mode`] and [`Gpio::write`], which also log each change.
+/// Implementations provide [`Gpio::configure`], [`Gpio::drive`] and
+/// [`Gpio::read`]. Callers use [`Gpio::set_mode`] and [`Gpio::write`], which
+/// also log each change.
 pub trait Gpio {
     /// Configure the GPIO in `mode`.
     fn configure(&mut self, mode: GpioMode) -> Result<()>;
     /// Drive the GPIO high or low.
     fn drive(&mut self, high: bool) -> Result<()>;
+    /// Read the level of the GPIO. This is not logged, as tests poll it.
+    fn read(&mut self) -> Result<bool>;
 
     /// Return the level of the device's pin while the component connected to
     /// it (e.g., a button) is active.
@@ -373,11 +399,46 @@ mod tests {
     }
 
     #[test]
-    fn a_console_needs_a_console_device() {
-        let with: AttachedDut = "nrf52840dk,console=/dev/ttyACM0".parse().unwrap();
+    fn duts_satisfy_what_they_are_wired_for() {
+        use super::GpioMode::{DigitalIn, DigitalOut};
+        use crate::test_cases::Requirement;
+
+        // An nRF52840DK with a console. Its `button0` (`P0.11`) supports
+        // `digital_out` on a `linux-gpiochip` controller, `button1` (`P0.12`)
+        // only on another driver, and `led0` (`P0.13`) only `digital_in`:
+        let spec = crate::host_spec::HostSpec::from_value(serde_json::json!({
+            "spec_version": "v2",
+            "gpio_controllers": {
+                "rp1": {"driver": "linux-gpiochip", "config": {}},
+                "exp": {"driver": "some-future-driver", "config": {}}
+            },
+            "duts": [{
+                "board": "nrf52840dk",
+                "console": {"kind": "uart", "device": "/dev/ttyACM0", "baud": 115200},
+                "gpio": {
+                    "P0.11": {"controller": "rp1", "modes": ["digital_out"]},
+                    "P0.12": {"controller": "exp", "modes": ["digital_out"]},
+                    "P0.13": {"controller": "rp1", "modes": ["digital_in"]}
+                }
+            }]
+        }))
+        .unwrap();
+        let dut = spec.duts[0].attached().unwrap();
+        let gpio = |name, mode| Requirement::Gpio { name, mode };
+
+        assert!(dut.satisfies(Requirement::Uart));
+        assert!(dut.satisfies(gpio("button0", DigitalOut)));
+        assert!(dut.satisfies(gpio("led0", DigitalIn)));
+        // A controller which the harness cannot drive:
+        assert!(!dut.satisfies(gpio("button1", DigitalOut)));
+        // A mode which the host does not support:
+        assert!(!dut.satisfies(gpio("led0", DigitalOut)));
+        // GPIOs which are not wired, or not mapped by the backend:
+        assert!(!dut.satisfies(gpio("led1", DigitalIn)));
+        assert!(!dut.satisfies(gpio("no-such-gpio", DigitalIn)));
+
         let without: AttachedDut = "nrf52840dk".parse().unwrap();
-        assert!(with.satisfies(crate::test_cases::Requirement::Uart));
-        assert!(!without.satisfies(crate::test_cases::Requirement::Uart));
+        assert!(!without.satisfies(Requirement::Uart));
     }
 
     #[test]

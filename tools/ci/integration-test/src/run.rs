@@ -37,7 +37,8 @@ pub struct Args {
     /// `<board>[,probe=<serial>][,console=<device>]` (may be repeated)
     #[arg(long, value_name = "DUT")]
     dut: Vec<AttachedDut>,
-    /// Host spec describing the DUTs attached to this host (replaces `--dut`)
+    /// Host spec describing the DUTs attached to this host and the wiring of
+    /// their GPIOs (replaces `--dut`)
     #[arg(long, conflicts_with = "dut")]
     host_spec: Option<PathBuf>,
     #[command(flatten)]

@@ -4,6 +4,8 @@
 
 pub mod command;
 pub mod console_buffer;
+pub mod dut_gpios;
+pub mod gpiochip;
 pub mod openocd;
 pub mod serial;
 pub mod tockloader;
