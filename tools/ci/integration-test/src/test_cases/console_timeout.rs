@@ -4,7 +4,7 @@
 
 use super::Step::{Expect, Send, Sleep};
 use super::{Requirement, TESTS, TestCase};
-use crate::boards::qemu;
+use crate::boards::{esp32_c3, qemu};
 use std::time::Duration;
 
 #[linkme::distributed_slice(TESTS)]
@@ -12,10 +12,16 @@ static TEST: TestCase = TestCase {
     id: "console_timeout",
     requires: &[Requirement::Uart],
     apps: &["tests/console/console_timeout"],
-    unsupported: &[(
-        &qemu::RV64_VIRT,
-        "with the app, the console stops taking input (cause not yet investigated)",
-    )],
+    unsupported: &[
+        (
+            &esp32_c3::BOARD,
+            "the ESP32 UART driver does not implement receive_abort",
+        ),
+        (
+            &qemu::RV64_VIRT,
+            "with the app, the console stops taking input (cause not yet investigated)",
+        ),
+    ],
     steps: &[
         Expect("tock$ "),
         Send("Hello, Tock!"),

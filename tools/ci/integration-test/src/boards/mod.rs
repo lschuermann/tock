@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2026.
 
+pub mod esp32_c3;
 pub mod helpers;
 pub mod nrf52;
 pub mod nucleo_f429zi;

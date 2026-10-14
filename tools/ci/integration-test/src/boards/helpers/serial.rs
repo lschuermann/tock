@@ -40,6 +40,15 @@ impl SerialUart {
         })
     }
 
+    /// Set the DTR and RTS lines of the port (e.g., for boards which wire them
+    /// to their reset and boot mode pins).
+    pub fn set_control_lines(&mut self, dtr: bool, rts: bool) -> Result<()> {
+        self.port
+            .write_data_terminal_ready(dtr)
+            .and_then(|()| self.port.write_request_to_send(rts))
+            .context("failed to set DTR/RTS")
+    }
+
     /// Close the console, and return all output it received.
     pub fn into_transcript(self) -> Vec<u8> {
         self.output.into_transcript()

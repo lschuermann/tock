@@ -4,7 +4,7 @@
 
 use super::Step::{Check, Expect};
 use super::{Requirement, TESTS, TestCase};
-use crate::boards::{Board, nrf52, nucleo_f429zi, qemu, rp2xxx};
+use crate::boards::{Board, esp32_c3, nrf52, nucleo_f429zi, qemu, rp2xxx};
 use anyhow::{Context, Result, ensure};
 
 #[linkme::distributed_slice(TESTS)]
@@ -59,6 +59,7 @@ static BOARD_SENSORS: &[(&Board, &[&str])] = &[
     (&nucleo_f429zi::BOARD, &["Temperature sensor"]),
     (&rp2xxx::PICO, &["Temperature sensor"]),
     (&rp2xxx::PICO_2, &[]),
+    (&esp32_c3::BOARD, &[]),
 ];
 
 /// Return the sensors of `board` from [`BOARD_SENSORS`].

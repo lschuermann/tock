@@ -46,15 +46,17 @@ const REMOTE_OUT_DIR: &str = "out";
 /// TEMPORARY until a Tock image overlay ships these tools. This installs
 /// `tockloader` at the revision of its master branch which Tock's `shell.nix`
 /// pins, as the latest release lacks its flash file changes for the
-/// NUCLEO-F429ZI and the Picos. Reused jobs may have another revision
-/// installed, so the installed revision is recorded, and replaced if it
-/// differs. The base images ship `pipx` and the other tools which the board
-/// backends use (`openocd`).
+/// NUCLEO-F429ZI, the Picos and the ESP32-C3. Reused jobs may have another
+/// revision installed, so the installed revision is recorded, and replaced if
+/// it differs. Likewise, this installs `esptool` v5 for the ESP32-C3, for its
+/// `esptool` command and hyphenated options. The base images ship `pipx` and
+/// the other tools which the board backends use (`openocd`).
 const SETUP: &str = "\
     rev=b1b0cce04bd86fd524fb40a80bcda07a4cb39c63; \
     [ \"$(cat ~/.tockloader-rev 2>/dev/null)\" = \"$rev\" ] || { \
       pipx install --force \"git+https://github.com/tock/tockloader@$rev\" && \
-      echo \"$rev\" > ~/.tockloader-rev; }";
+      echo \"$rev\" > ~/.tockloader-rev; } && \
+    { command -v esptool >/dev/null || pipx install 'esptool>=5,<6'; }";
 
 /// Shell command for the end of a pipeline, which copies its input to the
 /// job's serial console and passes it on.
