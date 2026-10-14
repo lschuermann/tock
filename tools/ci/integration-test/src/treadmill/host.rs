@@ -142,7 +142,7 @@ fn dut_condition(requirement: Requirement, board: &Board) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boards::{nrf52, qemu};
+    use crate::boards::{nrf52, nucleo_f429zi, qemu};
     use crate::test_cases::TestCase;
 
     fn planned(id: &str, board: &'static Board) -> PlannedTest {
@@ -169,6 +169,12 @@ mod tests {
             unrunnable(&planned("blink", nrf), &fleet).unwrap(),
             "no Treadmill host has a nrf52840dk DUT with all of: \
              led0 at P0.13 (digital_in), led1 at P0.14 (digital_in)"
+        );
+        let nucleo = planned("hello_world", &nucleo_f429zi::BOARD);
+        assert!(
+            unrunnable(&nucleo, &fleet)
+                .unwrap()
+                .contains("nucleo_f429zi DUT")
         );
         let qemu = planned("hello_world", &qemu::RV64_VIRT);
         assert!(unrunnable(&qemu, &fleet).unwrap().contains("virtual"));

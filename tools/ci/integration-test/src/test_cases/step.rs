@@ -41,8 +41,11 @@ pub enum Step {
     /// Type the given text on the console.
     Send(&'static str),
     /// Check the console output received by `Expect` steps since the last
-    /// `Check`.
+    /// `Check` or `Discard`.
     Check(fn(&str, &Board) -> Result<()>),
+    /// Discard the console output received by `Expect` steps since the last
+    /// `Check` or `Discard`.
+    Discard,
     /// Check that the SHA-256 hash of the board's screen, as a PPM image,
     /// equals the hash given for the board.
     ///
@@ -61,7 +64,7 @@ impl Step {
         match *self {
             Step::Expect(_) => timing.expect,
             Step::Send(text) => typing_time(text),
-            Step::Check(_) | Step::Screen(_) => Duration::ZERO,
+            Step::Check(_) | Step::Discard | Step::Screen(_) => Duration::ZERO,
             Step::Sleep(duration) | Step::Within(duration, _) => duration,
         }
     }
@@ -161,7 +164,8 @@ pub struct Ctx<'a> {
     dut: &'a mut dyn Dut,
     requires: &'static [Requirement],
     timing: &'static Timing,
-    /// Console output received by `Expect` steps since the last `Check`.
+    /// Console output received by `Expect` steps since the last `Check` or
+    /// `Discard`.
     output: String,
     /// Boot time which the test has not waited for yet. This time is added to
     /// the timeout of the next wait.
@@ -182,6 +186,10 @@ impl Ctx<'_> {
             Step::Expect(needle) => self.expect(needle).map(drop),
             Step::Send(text) => self.send(text),
             Step::Check(check) => check(&mem::take(&mut self.output), self.board()),
+            Step::Discard => {
+                self.output.clear();
+                Ok(())
+            }
             Step::Screen(hashes) => self.check_screen(hashes),
             Step::Sleep(duration) => self.sleep(duration),
             Step::Within(budget, run) => {
@@ -521,13 +529,14 @@ mod tests {
     }
 
     #[test]
-    fn check_sees_the_output_since_the_last_check() {
+    fn check_sees_the_output_since_the_last_check_or_discard() {
         const STEPS: &[Step] = &[
             Expect("a"),
             Check(|out, _| (out == "a").then_some(()).ok_or_else(|| anyhow!("{out}"))),
             Expect("b"),
+            Discard,
             Expect("c"),
-            Check(|out, _| (out == "bc").then_some(()).ok_or_else(|| anyhow!("{out}"))),
+            Check(|out, _| (out == "c").then_some(()).ok_or_else(|| anyhow!("{out}"))),
         ];
         assert_eq!(
             run_on("abc", &[Requirement::Uart], STEPS),

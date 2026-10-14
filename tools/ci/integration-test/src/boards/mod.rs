@@ -4,6 +4,7 @@
 
 pub mod helpers;
 pub mod nrf52;
+pub mod nucleo_f429zi;
 pub mod qemu;
 
 use crate::host_spec::GpioPinSpec;
@@ -106,7 +107,8 @@ impl AttachedDut {
                         && (pin.controller_spec.as_ref())
                             .is_some_and(|c| c.driver == "linux-gpiochip")
                 }),
-            Requirement::Feature(Feature::Display) => true,
+            // Features are properties of the board's kernel and backend:
+            Requirement::Feature(_) => true,
         }
     }
 }
@@ -185,6 +187,10 @@ pub enum Feature {
     /// The board has a screen, which its backend captures through
     /// [`Dut::screen`].
     Display,
+    /// The kernel reports the ARMv7-M fault status registers (CFSR and HFSR)
+    /// of a kernel HardFault, and its process console has the `hardfault`
+    /// command to cause one.
+    ArmV7mHardFault,
 }
 
 impl Board {

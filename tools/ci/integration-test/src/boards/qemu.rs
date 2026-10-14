@@ -13,7 +13,7 @@
 //! the command line, for QEMU's QMP monitor and the board's console.
 
 use crate::boards::helpers::console_buffer::ConsoleBuffer;
-use crate::boards::helpers::{command, tockloader};
+use crate::boards::helpers::tockloader;
 use crate::boards::{BOARDS, Board, Dut, Feature, Gpio, GpioMode, Open, Timing, Uart};
 use anyhow::{Context, Result, anyhow, bail};
 use nix::sys::signal::{Signal, killpg};
@@ -53,8 +53,8 @@ pub static RV64_VIRT: Board = Board {
             tock,
             Layout {
                 board: "qemu_rv64_virt",
-                kernel: "0x80000000",
-                apps: "0x80100000",
+                kernel: 0x8000_0000,
+                apps: 0x8010_0000,
             },
         ))
     }),
@@ -76,8 +76,8 @@ pub static HIFIVE1: Board = Board {
             tock,
             Layout {
                 board: "hifive1b",
-                kernel: "0x20010000",
-                apps: "0x20040000",
+                kernel: 0x2001_0000,
+                apps: 0x2004_0000,
             },
         ))
     }),
@@ -87,8 +87,10 @@ pub static HIFIVE1: Board = Board {
 struct Layout {
     /// Name of the board in tockloader.
     board: &'static str,
-    kernel: &'static str,
-    apps: &'static str,
+    /// Flash address of the kernel.
+    kernel: u64,
+    /// Flash address of the first app.
+    apps: u64,
 }
 
 /// Maximum time QEMU may take to answer a QMP command.
@@ -128,13 +130,6 @@ impl Qemu {
             key: "",
             held: Vec::new(),
         }
-    }
-
-    fn tockloader(&self, subcommand: &str, flash_file: &Path) -> Command {
-        let mut cmd = tockloader::command(subcommand);
-        cmd.arg("--flash-file").arg(flash_file);
-        cmd.args(["--board", self.layout.board]);
-        cmd
     }
 
     /// Connect to the Unix sockets that QEMU listens on at `paths`. Connecting
@@ -193,18 +188,15 @@ impl Dut for Qemu {
     fn flash(&mut self, kernel: &Path, apps: &[&Path]) -> Result<()> {
         let dir = (self.dir.insert(tempfile::tempdir()?).path()).to_path_buf();
         let flash_file = dir.join("flash.bin");
-        command::run(
-            (self.tockloader("flash", &flash_file))
-                .args(["--address", self.layout.kernel])
-                .arg(kernel),
+        let layout = &self.layout;
+        tockloader::write_flash_file(
+            &flash_file,
+            layout.board,
+            layout.kernel,
+            Some(layout.apps),
+            kernel,
+            apps,
         )?;
-        for app in apps {
-            command::run(
-                (self.tockloader("install", &flash_file))
-                    .args(["--app-address", self.layout.apps])
-                    .arg(app),
-            )?;
-        }
 
         // QEMU only starts once both sockets are connected. `-S` then keeps the
         // CPU paused until the `cont` command below:

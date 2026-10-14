@@ -17,6 +17,7 @@ use crate::boards::{BOARDS, Board, Feature, GpioMode};
 #[linkme::distributed_slice]
 pub static TESTS: [TestCase];
 
+mod app_stack_overflow_then_kernel_hardfault;
 mod blink;
 mod blink_c_hello_buttons;
 mod button_print;
@@ -181,9 +182,19 @@ mod tests {
             names
         };
         assert_eq!(boards("led_odd"), ["qemu_rv64_virt"]);
-        assert_eq!(boards("button_print"), ["nrf52840dk", "qemu_rv64_virt"]);
+        assert_eq!(
+            boards("button_print"),
+            ["nrf52840dk", "nucleo_f429zi", "qemu_rv64_virt"]
+        );
         // This test requires `led0` and `led1`, which only these boards map:
-        assert_eq!(boards("scheduler_whileone_blink"), ["nrf52840dk"]);
+        assert_eq!(
+            boards("scheduler_whileone_blink"),
+            ["nrf52840dk", "nucleo_f429zi"]
+        );
+        assert_eq!(
+            boards("app_stack_overflow_then_kernel_hardfault"),
+            ["nucleo_f429zi"]
+        );
         assert_eq!(boards("hello_world").len(), BOARDS.len());
     }
 
@@ -203,7 +214,7 @@ mod tests {
         fn uses_console(step: &Step) -> bool {
             match *step {
                 Step::Expect(_) | Step::Send(_) | Step::Check(_) => true,
-                Step::Screen(_) | Step::Sleep(_) | Step::Within(..) => false,
+                Step::Discard | Step::Screen(_) | Step::Sleep(_) | Step::Within(..) => false,
             }
         }
         for tc in TESTS {

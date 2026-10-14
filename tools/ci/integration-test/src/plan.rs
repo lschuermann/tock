@@ -501,8 +501,8 @@ mod tests {
         );
         // A test which another selector already includes is not added again:
         assert_eq!(
-            select(&["hello_world@nrf52840dk", "hello_world@anyboard"]),
-            ["hello_world@nrf52840dk"]
+            select(&["hello_world@nucleo_f429zi", "hello_world@anyboard"]),
+            ["hello_world@nucleo_f429zi"]
         );
     }
 

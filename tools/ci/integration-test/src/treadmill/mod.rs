@@ -43,13 +43,14 @@ const REMOTE_OUT_DIR: &str = "out";
 
 /// Shell commands which install the tools of the board backends on a job.
 ///
-/// TEMPORARY until a Tock image overlay ships these tools. This installs the
-/// `tockloader` release v1.18.1. Reused jobs may have another revision
-/// installed, so the installed revision is recorded, and replaced if it
-/// differs. The base images ship `pipx` and the other tools which the board
-/// backends use (`openocd`).
+/// TEMPORARY until a Tock image overlay ships these tools. This installs
+/// `tockloader` at the revision of its master branch which Tock's `shell.nix`
+/// pins, as the latest release lacks its flash file changes for the
+/// NUCLEO-F429ZI. Reused jobs may have another revision installed, so the
+/// installed revision is recorded, and replaced if it differs. The base images
+/// ship `pipx` and the other tools which the board backends use (`openocd`).
 const SETUP: &str = "\
-    rev=v1.18.1; \
+    rev=b1b0cce04bd86fd524fb40a80bcda07a4cb39c63; \
     [ \"$(cat ~/.tockloader-rev 2>/dev/null)\" = \"$rev\" ] || { \
       pipx install --force \"git+https://github.com/tock/tockloader@$rev\" && \
       echo \"$rev\" > ~/.tockloader-rev; }";
@@ -806,17 +807,37 @@ mod tests {
 
     #[test]
     fn groups_split_boards_and_share_their_tests() {
-        let plan = plan(&["hello_world"]);
+        let plan = Plan::compute(&Selection {
+            tests: [
+                "hello_world@nrf52840dk",
+                "blink@nrf52840dk",
+                "hello_world@nucleo_f429zi",
+            ]
+            .iter()
+            .map(|s| s.parse().unwrap())
+            .collect(),
+        })
+        .unwrap();
         let tests = |g: &Group| -> Vec<String> { g.plan.tests.iter().map(|t| t.id()).collect() };
 
         let one = groups(&plan, 1).unwrap();
-        assert_eq!(one.len(), 1);
+        assert_eq!(one.len(), 2);
         assert_eq!(one[0].label, "nrf52840dk");
-        assert_eq!(tests(&one[0]), ["hello_world@nrf52840dk"]);
+        assert_eq!(tests(&one[0]).len(), 2);
+        assert_eq!(one[1].label, "nucle~f429zi");
+        // The plan of each group only holds the artifacts of its tests:
+        assert!(one.iter().all(|g| {
+            g.plan.artifacts.len() < plan.artifacts.len()
+                && (g.plan.tests.iter()).all(|t| g.plan.artifacts.contains_key(&t.kernel))
+        }));
 
         // With more jobs than tests, there is one job per test:
         let shared = groups(&plan, 3).unwrap();
         let labels: Vec<&str> = shared.iter().map(|g| g.label.as_str()).collect();
-        assert_eq!(labels, ["nrf52840dk"]);
+        assert_eq!(labels, ["nrf52840dk#1", "nrf52840dk#2", "nucle~f429zi"]);
+        assert_eq!(
+            shared.iter().flat_map(tests).collect::<Vec<_>>(),
+            one.iter().flat_map(tests).collect::<Vec<_>>()
+        );
     }
 }
