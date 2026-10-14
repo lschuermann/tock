@@ -34,7 +34,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "artifacts_dir")]
     libtock_c: Option<PathBuf>,
     /// DUT attached to this host, as
-    /// `<board>[,probe=<serial>][,console=<device>]` (may be repeated)
+    /// `<board>[,probe=<serial>][,console=<device>][,usb]` (may be repeated)
     #[arg(long, value_name = "DUT")]
     dut: Vec<AttachedDut>,
     /// Host spec describing the DUTs attached to this host and the wiring of

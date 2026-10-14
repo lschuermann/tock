@@ -4,7 +4,7 @@
 
 //! Matching of the hosts which can run the tests of a plan.
 
-use crate::boards::Board;
+use crate::boards::{Board, Feature};
 use crate::host_spec::HostSpec;
 use crate::plan::{Plan, PlannedTest};
 use crate::test_cases::Requirement;
@@ -124,7 +124,9 @@ pub fn host_predicate(plan: &Plan) -> String {
 ///
 /// This condition must match [`crate::boards::AttachedDut::satisfies`].
 fn dut_condition(requirement: Requirement, board: &Board) -> String {
+    const USB: &str = "has(d.connectivity) && \"usb\" in d.connectivity";
     match requirement {
+        Requirement::Uart if board.features.contains(&Feature::UsbConsole) => USB.to_string(),
         Requirement::Uart => "has(d.console)".to_string(),
         Requirement::Gpio { name, mode } => match board.pin(name) {
             // Only GPIOs which `DutGpios` can drive:
@@ -135,6 +137,7 @@ fn dut_condition(requirement: Requirement, board: &Board) -> String {
             ),
             None => "false".to_string(),
         },
+        Requirement::Feature(Feature::UsbConsole) => USB.to_string(),
         Requirement::Feature(_) => "true".to_string(),
     }
 }
@@ -142,7 +145,7 @@ fn dut_condition(requirement: Requirement, board: &Board) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boards::{nrf52, nucleo_f429zi, qemu};
+    use crate::boards::{nrf52, nucleo_f429zi, qemu, rp2xxx};
     use crate::test_cases::TestCase;
 
     fn planned(id: &str, board: &'static Board) -> PlannedTest {
@@ -178,5 +181,14 @@ mod tests {
         );
         let qemu = planned("hello_world", &qemu::RV64_VIRT);
         assert!(unrunnable(&qemu, &fleet).unwrap().contains("virtual"));
+    }
+
+    #[test]
+    fn usb_consoles_need_usb_in_cel_too() {
+        let pico = &rp2xxx::PICO;
+        assert_eq!(
+            dut_condition(Requirement::Uart, pico),
+            dut_condition(Requirement::Feature(Feature::UsbConsole), pico)
+        );
     }
 }

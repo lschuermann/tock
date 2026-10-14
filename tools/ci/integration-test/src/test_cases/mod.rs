@@ -49,6 +49,7 @@ mod stack_size_test02;
 mod tock_logo;
 mod tutorial_ipc_rng_led;
 mod unexpected_rx;
+mod usb_enumeration_stress;
 
 /// Resource a test requires a board to provide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +69,15 @@ impl Requirement {
     /// `board`.
     pub fn describe(&self, board: &Board) -> String {
         match *self {
+            Requirement::Uart if board.features.contains(&Feature::UsbConsole) => {
+                "USB console".to_string()
+            }
             Requirement::Uart => "console".to_string(),
             Requirement::Gpio { name, mode } => match board.pin(name) {
                 Some(pin) => format!("{name} at {pin} ({})", mode.as_str()),
                 None => format!("{name} (not mapped for {board})"),
             },
+            Requirement::Feature(Feature::UsbConsole) => "USB console".to_string(),
             Requirement::Feature(feature) => format!("{feature:?}"),
         }
     }
@@ -191,6 +196,7 @@ mod tests {
             boards("scheduler_whileone_blink"),
             ["nrf52840dk", "nucleo_f429zi"]
         );
+        assert_eq!(boards("usb_enumeration_stress"), ["raspberry_pi_pico"]);
         assert_eq!(
             boards("app_stack_overflow_then_kernel_hardfault"),
             ["nucleo_f429zi"]
@@ -214,7 +220,13 @@ mod tests {
         fn uses_console(step: &Step) -> bool {
             match *step {
                 Step::Expect(_) | Step::Send(_) | Step::Check(_) => true,
-                Step::Discard | Step::Screen(_) | Step::Sleep(_) | Step::Within(..) => false,
+                Step::Steps(steps) => steps.iter().any(uses_console),
+                Step::Repeat(_, step) => uses_console(step),
+                Step::Discard
+                | Step::Screen(_)
+                | Step::Reset
+                | Step::Sleep(_)
+                | Step::Within(..) => false,
             }
         }
         for tc in TESTS {

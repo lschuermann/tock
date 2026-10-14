@@ -20,6 +20,20 @@ impl ConsoleBuffer {
         Self::default()
     }
 
+    /// Construct a buffer which continues `transcript`, the output received by
+    /// a previous console (e.g., before its board restarted).
+    pub fn with_transcript(transcript: Vec<u8>) -> Self {
+        ConsoleBuffer {
+            pending: Vec::new(),
+            received: transcript,
+        }
+    }
+
+    /// Return all output received so far, and drop the pending output.
+    pub fn into_transcript(self) -> Vec<u8> {
+        self.received
+    }
+
     /// Append `bytes` received from the console.
     pub fn push(&mut self, bytes: &[u8]) {
         self.pending.extend_from_slice(bytes);

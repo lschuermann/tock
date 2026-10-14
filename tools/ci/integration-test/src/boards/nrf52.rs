@@ -34,6 +34,7 @@ pub static NRF52840DK: Board = Board {
     features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
+        restart: Duration::from_secs(5),
         boot: Duration::from_secs(5),
         expect: Duration::from_secs(3),
     },
@@ -51,6 +52,7 @@ pub static NRF52DK: Board = Board {
     features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
+        restart: Duration::from_secs(5),
         boot: Duration::from_secs(5),
         expect: Duration::from_secs(3),
     },

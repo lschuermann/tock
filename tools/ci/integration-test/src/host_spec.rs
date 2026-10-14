@@ -96,6 +96,10 @@ pub struct DutSpec {
     pub debug: Option<DebugSpec>,
     #[serde(default)]
     pub console: Option<ConsoleSpec>,
+    /// Connections of the DUT to the host besides its debug probe and console
+    /// (e.g., `usb` for its own USB port).
+    #[serde(default)]
+    pub connectivity: Vec<String>,
     /// GPIOs of the DUT which are wired to the host, by the board's own pin
     /// name (e.g., `P0.13`).
     #[serde(default)]
@@ -117,6 +121,7 @@ impl DutSpec {
                     Some(ConsoleSpec::Uart { device }) => Some(device.clone()),
                     Some(ConsoleSpec::Unsupported) | None => None,
                 },
+                usb: self.connectivity.iter().any(|c| c == "usb"),
                 gpio: self.gpio.clone(),
             },
         })
@@ -281,8 +286,9 @@ mod tests {
         assert!(open_gpio(led).unwrap().is_ok());
         assert!(open_gpio(&nrf.gpio["P0.14"]).is_none());
 
-        // A board which the harness does not know:
-        assert!(spec.duts[1].attached().is_none());
+        let pico = spec.duts[1].attached().unwrap().config;
+        assert_eq!(pico.probe, None);
+        assert_eq!(pico.console, None);
     }
 
     #[test]

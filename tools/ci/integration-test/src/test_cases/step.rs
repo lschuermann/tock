@@ -41,10 +41,10 @@ pub enum Step {
     /// Type the given text on the console.
     Send(&'static str),
     /// Check the console output received by `Expect` steps since the last
-    /// `Check` or `Discard`.
+    /// `Check`, `Discard` or `Reset`.
     Check(fn(&str, &Board) -> Result<()>),
     /// Discard the console output received by `Expect` steps since the last
-    /// `Check` or `Discard`.
+    /// `Check`, `Discard` or `Reset`.
     Discard,
     /// Check that the SHA-256 hash of the board's screen, as a PPM image,
     /// equals the hash given for the board.
@@ -52,8 +52,14 @@ pub enum Step {
     /// The image is saved next to the test's console log, such that it can be
     /// inspected and its hash recorded.
     Screen(&'static [(&'static Board, &'static str)]),
+    /// Restart the board, keeping what was flashed.
+    Reset,
     /// Sleep for the given duration.
     Sleep(Duration),
+    /// Run a sequence of steps in order.
+    Steps(&'static [Step]),
+    /// Run a step the given number of times.
+    Repeat(u32, &'static Step),
     /// Run procedural code, which may charge up to the given budget.
     Within(Duration, fn(&mut Ctx) -> Result<()>),
 }
@@ -65,7 +71,10 @@ impl Step {
             Step::Expect(_) => timing.expect,
             Step::Send(text) => typing_time(text),
             Step::Check(_) | Step::Discard | Step::Screen(_) => Duration::ZERO,
+            Step::Reset => timing.restart + timing.boot,
             Step::Sleep(duration) | Step::Within(duration, _) => duration,
+            Step::Steps(steps) => steps.iter().map(|step| step.cost(timing)).sum(),
+            Step::Repeat(n, step) => step.cost(timing) * n,
         }
     }
 }
@@ -149,13 +158,16 @@ pub fn run(
         budget: None,
         screen,
         retrying: false,
+        infra: None,
     };
     let steps = |ctx: &mut Ctx| case.steps.iter().try_for_each(|step| ctx.step(step));
-    match ctx.release_all().and_then(|()| steps(&mut ctx)) {
-        Ok(()) => TestOutcome::Passed,
-        Err(e) => TestOutcome::Failed {
+    let result = ctx.release_all().and_then(|()| steps(&mut ctx));
+    match (ctx.infra, result) {
+        (Some(reason), _) => TestOutcome::InfraFailed { reason },
+        (None, Err(e)) => TestOutcome::Failed {
             reason: format!("{e:#}"),
         },
+        (None, Ok(())) => TestOutcome::Passed,
     }
 }
 
@@ -178,6 +190,8 @@ pub struct Ctx<'a> {
     /// Whether [`Ctx::retry`] is running, which reports an exhausted budget as
     /// a timeout of the retried action.
     retrying: bool,
+    /// Reason for an infrastructure failure during the test, if any.
+    infra: Option<String>,
 }
 
 impl Ctx<'_> {
@@ -191,7 +205,10 @@ impl Ctx<'_> {
                 Ok(())
             }
             Step::Screen(hashes) => self.check_screen(hashes),
+            Step::Reset => self.restart(),
             Step::Sleep(duration) => self.sleep(duration),
+            Step::Steps(steps) => steps.iter().try_for_each(|step| self.step(step)),
+            Step::Repeat(n, step) => (0..n).try_for_each(|_| self.step(step)),
             Step::Within(budget, run) => {
                 self.budget = Some(budget);
                 let result = run(self);
@@ -220,6 +237,23 @@ impl Ctx<'_> {
                 self.dut.board()
             ),
         }
+    }
+
+    /// Restart the board, keeping what was flashed.
+    ///
+    /// A failing restart, or one which takes longer than [`Timing::restart`],
+    /// is an infrastructure failure.
+    fn restart(&mut self) -> Result<()> {
+        let start = Instant::now();
+        let restarted = (self.dut.restart())
+            .and_then(|()| check_bound("restarting", start, self.timing.restart));
+        if let Err(e) = restarted {
+            self.infra = Some(format!("{e:#}"));
+            return Err(e);
+        }
+        self.output.clear();
+        self.boot = self.timing.boot;
+        Ok(())
     }
 
     /// Return the board the test runs on.
@@ -462,6 +496,9 @@ mod tests {
         fn reset(&mut self) -> Result<()> {
             Ok(())
         }
+        fn restart(&mut self) -> Result<()> {
+            Ok(())
+        }
         fn uart(&mut self) -> Option<&mut dyn Uart> {
             Some(self)
         }
@@ -513,33 +550,36 @@ mod tests {
 
     #[test]
     fn costs_add_up() {
-        const STEPS: &[Step] = &[
+        const STEPS: Step = Steps(&[
             Expect("a"),
             Send("ab"),
             Check(|_, _| Ok(())),
             Sleep(Duration::from_secs(1)),
-            Expect("b"),
+            Repeat(3, &Steps(&[Reset, Expect("b")])),
             Within(Duration::from_secs(7), |_| Ok(())),
-        ];
+        ]);
         let t = timing();
+        let reset = t.restart + t.boot + t.expect;
         assert_eq!(
-            STEPS.iter().map(|step| step.cost(t)).sum::<Duration>(),
-            2 * t.expect + Duration::from_millis(20) + Duration::from_secs(8)
+            STEPS.cost(t),
+            t.expect + Duration::from_millis(20) + 3 * reset + Duration::from_secs(8)
         );
     }
 
     #[test]
-    fn check_sees_the_output_since_the_last_check_or_discard() {
+    fn check_sees_the_output_since_the_last_check_discard_or_reset() {
         const STEPS: &[Step] = &[
             Expect("a"),
             Check(|out, _| (out == "a").then_some(()).ok_or_else(|| anyhow!("{out}"))),
             Expect("b"),
             Discard,
             Expect("c"),
-            Check(|out, _| (out == "c").then_some(()).ok_or_else(|| anyhow!("{out}"))),
+            Reset,
+            Expect("d"),
+            Check(|out, _| (out == "d").then_some(()).ok_or_else(|| anyhow!("{out}"))),
         ];
         assert_eq!(
-            run_on("abc", &[Requirement::Uart], STEPS),
+            run_on("abcd", &[Requirement::Uart], STEPS),
             TestOutcome::Passed
         );
     }

@@ -31,6 +31,7 @@ pub static BOARD: Board = Board {
     features: &[Feature::ArmV7mHardFault],
     timing: Timing {
         flash: Duration::from_secs(30),
+        restart: Duration::from_secs(5),
         boot: Duration::from_secs(5),
         expect: Duration::from_secs(3),
     },

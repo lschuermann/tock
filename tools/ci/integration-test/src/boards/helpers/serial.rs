@@ -19,6 +19,13 @@ impl SerialUart {
     /// Open the serial port `device` with the baud rate `baud`, and discard any
     /// input it has received before.
     pub fn open(device: &str, baud: u32) -> Result<Self> {
+        Self::open_continuing(device, baud, Vec::new())
+    }
+
+    /// Open the serial port `device` like [`SerialUart::open`], and continue
+    /// `transcript`, the output received by a previous console (e.g., before
+    /// its board restarted).
+    pub fn open_continuing(device: &str, baud: u32, transcript: Vec<u8>) -> Result<Self> {
         let port = serialport::new(device, baud)
             .timeout(Duration::from_millis(200))
             .open()
@@ -29,8 +36,13 @@ impl SerialUart {
 
         Ok(SerialUart {
             port,
-            output: ConsoleBuffer::new(),
+            output: ConsoleBuffer::with_transcript(transcript),
         })
+    }
+
+    /// Close the console, and return all output it received.
+    pub fn into_transcript(self) -> Vec<u8> {
+        self.output.into_transcript()
     }
 }
 

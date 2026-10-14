@@ -6,6 +6,7 @@ pub mod helpers;
 pub mod nrf52;
 pub mod nucleo_f429zi;
 pub mod qemu;
+pub mod rp2xxx;
 
 use crate::host_spec::GpioPinSpec;
 use crate::test_cases::{Requirement, TestCase};
@@ -99,6 +100,11 @@ impl AttachedDut {
     /// `requirement`.
     pub fn satisfies(&self, requirement: Requirement) -> bool {
         match requirement {
+            // A USB console needs the board's USB port, independent of the
+            // wiring of its UART:
+            Requirement::Uart if self.board.features.contains(&Feature::UsbConsole) => {
+                self.config.usb
+            }
             Requirement::Uart => self.config.console.is_some(),
             Requirement::Gpio { name, mode } => (self.board.pin(name))
                 .and_then(|pin| self.config.gpio.get(pin))
@@ -107,7 +113,9 @@ impl AttachedDut {
                         && (pin.controller_spec.as_ref())
                             .is_some_and(|c| c.driver == "linux-gpiochip")
                 }),
-            // Features are properties of the board's kernel and backend:
+            Requirement::Feature(Feature::UsbConsole) => self.config.usb,
+            // Other features are properties of the board's kernel and
+            // backend:
             Requirement::Feature(_) => true,
         }
     }
@@ -122,6 +130,8 @@ pub struct DutConfig {
     /// Path of the serial port of the board's UART console (e.g.,
     /// `/dev/ttyACM0`).
     pub console: Option<String>,
+    /// Whether the board's own USB port is connected to the host.
+    pub usb: bool,
     /// GPIOs of the board which are wired to the host, by the board's own pin
     /// name (e.g., `P0.13`).
     pub gpio: BTreeMap<String, GpioPinSpec>,
@@ -139,7 +149,7 @@ impl std::str::FromStr for AttachedDut {
     type Err = anyhow::Error;
 
     /// Parse an [`AttachedDut`] from a string description of the form
-    /// `<board>[,probe=<serial>][,console=<device>]`.
+    /// `<board>[,probe=<serial>][,console=<device>][,usb]`.
     fn from_str(s: &str) -> Result<Self> {
         let mut fields = s.split(',');
 
@@ -153,8 +163,9 @@ impl std::str::FromStr for AttachedDut {
             match field.split_once('=') {
                 Some(("probe", serial)) => config.probe = Some(serial.to_string()),
                 Some(("console", device)) => config.console = Some(device.to_string()),
+                None if field == "usb" => config.usb = true,
                 _ => bail!(
-                    "unknown DUT setting {field:?}, expected probe=<serial> or console=<device>"
+                    "unknown DUT setting {field:?}, expected probe=<serial>, console=<device> or usb"
                 ),
             }
         }
@@ -172,6 +183,11 @@ pub struct Timing {
     ///
     /// Exceeding this time will abort tests and report an error.
     pub flash: Duration,
+    /// Maximum time to restart the board, keeping what was flashed (see
+    /// [`Dut::restart`]).
+    ///
+    /// Exceeding this time will abort tests and report an error.
+    pub restart: Duration,
     /// Maximum time for the board to boot after flashing.
     ///
     /// This time is added to the timeout of the test's first wait, or following
@@ -184,6 +200,9 @@ pub struct Timing {
 /// Feature of a board, beyond its console and GPIOs, which tests may require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
+    /// The kernel's console is the board's own USB CDC-ACM device. Thus, the
+    /// board's USB port must be connected to the host.
+    UsbConsole,
     /// The board has a screen, which its backend captures through
     /// [`Dut::screen`].
     Display,
@@ -376,6 +395,14 @@ pub trait Dut {
     /// Stop the software running on the device. A subsequent [`Dut::flash`]
     /// starts it again.
     fn reset(&mut self) -> Result<()>;
+    /// Restart the device, keeping what [`Dut::flash`] wrote, and reopen its
+    /// console, continuing its transcript.
+    ///
+    /// The default implementation returns an error, for devices which cannot
+    /// restart.
+    fn restart(&mut self) -> Result<()> {
+        bail!("restarting is not supported on {}", self.board())
+    }
     /// Return the device's console, or `None` if the device has no console.
     fn uart(&mut self) -> Option<&mut dyn Uart>;
     /// Return the device's GPIO with the logical name `name`, or `None` if the
@@ -392,7 +419,7 @@ pub trait Dut {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttachedDut, BOARDS, by_name, nrf52};
+    use super::{AttachedDut, BOARDS, Feature, by_name, nrf52};
 
     #[test]
     fn duts_parse_from_their_board_and_settings() {
@@ -400,6 +427,14 @@ mod tests {
         assert_eq!(dut.board, &nrf52::NRF52840DK);
         assert_eq!(dut.config.console.as_deref(), Some("/dev/ttyACM0"));
         assert_eq!(dut.config.probe.as_deref(), Some("123"));
+        assert!(!dut.config.usb);
+        assert!(
+            "raspberry_pi_pico,usb"
+                .parse::<AttachedDut>()
+                .unwrap()
+                .config
+                .usb
+        );
         assert!("nrf52840dk,baud=9600".parse::<AttachedDut>().is_err());
         assert!("qemu_rv64_virt".parse::<AttachedDut>().is_err());
     }
@@ -445,6 +480,27 @@ mod tests {
 
         let without: AttachedDut = "nrf52840dk".parse().unwrap();
         assert!(!without.satisfies(Requirement::Uart));
+    }
+
+    #[test]
+    fn usb_consoles_need_usb_independent_of_the_uart() {
+        use crate::test_cases::Requirement;
+
+        let spec = crate::host_spec::HostSpec::from_value(serde_json::json!({
+            "spec_version": "v2",
+            "duts": [
+                {"board": "raspberry_pi_pico", "connectivity": ["usb"]},
+                {"board": "raspberry_pi_pico",
+                 "console": {"kind": "uart", "device": "/dev/ttyACM0", "baud": 115200}}
+            ]
+        }))
+        .unwrap();
+        let usb = spec.duts[0].attached().unwrap();
+        let uart = spec.duts[1].attached().unwrap();
+        for requirement in [Requirement::Uart, Requirement::Feature(Feature::UsbConsole)] {
+            assert!(usb.satisfies(requirement));
+            assert!(!uart.satisfies(requirement));
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 const TIMING: Timing = Timing {
     flash: Duration::from_secs(20),
+    restart: Duration::from_secs(5),
     boot: Duration::from_secs(10),
     expect: Duration::from_secs(3),
 };

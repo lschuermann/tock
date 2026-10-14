@@ -4,7 +4,7 @@
 
 use super::Step::{Check, Expect};
 use super::{Requirement, TESTS, TestCase};
-use crate::boards::{Board, nrf52, nucleo_f429zi, qemu};
+use crate::boards::{Board, nrf52, nucleo_f429zi, qemu, rp2xxx};
 use anyhow::{Context, Result, ensure};
 
 #[linkme::distributed_slice(TESTS)]
@@ -57,6 +57,8 @@ static BOARD_SENSORS: &[(&Board, &[&str])] = &[
     (&nrf52::NRF52840DK, &["Temperature sensor"]),
     (&nrf52::NRF52DK, &["Temperature sensor"]),
     (&nucleo_f429zi::BOARD, &["Temperature sensor"]),
+    (&rp2xxx::PICO, &["Temperature sensor"]),
+    (&rp2xxx::PICO_2, &[]),
 ];
 
 /// Return the sensors of `board` from [`BOARD_SENSORS`].
