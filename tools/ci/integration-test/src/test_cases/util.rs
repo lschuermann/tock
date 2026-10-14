@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2026.
 
+use super::Requirement;
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
+
+/// Requirement of a button with the logical name `button0`.
+pub const BUTTON0: Requirement = Requirement::Gpio("button0");
 
 /// Time apps take to draw on the screen once they run.
 pub const DRAW_TIME: Duration = Duration::from_millis(500);

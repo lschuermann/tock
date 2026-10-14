@@ -17,6 +17,7 @@ use crate::boards::{BOARDS, Board, Feature};
 #[linkme::distributed_slice]
 pub static TESTS: [TestCase];
 
+mod button_print;
 mod c_hello_and_printf_long;
 mod console;
 mod console_timeout;
@@ -43,15 +44,21 @@ mod unexpected_rx;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
     Uart,
+    /// GPIO with the given logical name (see [`Board::pins`]).
+    Gpio(&'static str),
     Feature(Feature),
 }
 
 impl Requirement {
-    /// Return a short description of what this requirement requires of a
-    /// board.
-    pub fn describe(&self) -> String {
+    /// Return a short description of what this requirement requires of
+    /// `board`.
+    pub fn describe(&self, board: &Board) -> String {
         match *self {
             Requirement::Uart => "console".to_string(),
+            Requirement::Gpio(name) => match board.pin(name) {
+                Some(pin) => format!("{name} at {pin}"),
+                None => format!("{name} (not mapped for {board})"),
+            },
             Requirement::Feature(feature) => format!("{feature:?}"),
         }
     }
@@ -97,10 +104,10 @@ impl TestCase {
         timing.flash + timing.boot + steps
     }
 
-    /// Return a description of what this test requires of a board, which lists
+    /// Return a description of what this test requires of `board`, which lists
     /// each requirement once.
-    pub fn describe_requirements(&self) -> String {
-        let mut needs: Vec<String> = self.requires.iter().map(|r| r.describe()).collect();
+    pub fn describe_requirements(&self, board: &Board) -> String {
+        let mut needs: Vec<String> = self.requires.iter().map(|r| r.describe(board)).collect();
         needs.sort();
         needs.dedup();
         needs.join(", ")
@@ -159,6 +166,7 @@ mod tests {
             tc.boards().collect()
         };
         assert_eq!(boards("led_odd"), [&qemu::RV64_VIRT]);
+        assert_eq!(boards("button_print"), [&qemu::RV64_VIRT]);
         assert_eq!(boards("hello_world").len(), BOARDS.len());
     }
 

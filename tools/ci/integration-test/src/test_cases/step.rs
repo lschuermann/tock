@@ -16,7 +16,7 @@
 //! path, independent of the speed of the device.
 
 use super::{Requirement, TestCase};
-use crate::boards::{Board, Dut, Feature, Timing, Uart};
+use crate::boards::{Board, Dut, Feature, Gpio, GpioMode, Timing, Uart};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use fs_err as fs;
 use log::info;
@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 /// Delay after each byte typed on the console. Consoles may drop input which
 /// arrives faster than they process it.
 const TYPING_DELAY: Duration = Duration::from_millis(10);
+/// Time for the device to react to a change of a GPIO input.
+pub const SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy)]
 pub enum Step {
@@ -142,7 +144,8 @@ pub fn run(
         budget: None,
         screen,
     };
-    match case.steps.iter().try_for_each(|step| ctx.step(step)) {
+    let steps = |ctx: &mut Ctx| case.steps.iter().try_for_each(|step| ctx.step(step));
+    match ctx.release_all().and_then(|()| steps(&mut ctx)) {
         Ok(()) => TestOutcome::Passed,
         Err(e) => TestOutcome::Failed {
             reason: format!("{e:#}"),
@@ -264,6 +267,44 @@ impl Ctx<'_> {
         std::thread::sleep(duration);
         Ok(())
     }
+
+    /// Return the GPIO with the logical name `name`, which the test must
+    /// require.
+    fn gpio(&mut self, name: &str) -> Result<&mut dyn Gpio> {
+        let required =
+            (self.requires.iter()).any(|r| matches!(r, Requirement::Gpio(n) if *n == name));
+        ensure!(required, "test used GPIO {name:?} without requiring it");
+        (self.dut.gpio(name)).with_context(|| format!("board has no GPIO {name:?}"))
+    }
+
+    /// Configure every GPIO the test requires as an input, which releases all
+    /// buttons.
+    fn release_all(&mut self) -> Result<()> {
+        for requirement in self.requires {
+            if let Requirement::Gpio(name) = requirement {
+                self.release(name)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Press `button` by driving its GPIO to its active level.
+    pub fn press(&mut self, button: &str) -> Result<()> {
+        info!("  pressing {button}");
+        let gpio = self.gpio(button)?;
+        let active = gpio.active_high();
+        gpio.set_mode(GpioMode::DigitalOut)?;
+        gpio.write(active)
+    }
+
+    /// Release `button` by configuring its GPIO as an input.
+    ///
+    /// The device's pull resistor then returns the GPIO to its inactive level.
+    /// Thus, the host never drives an active-low GPIO high, as the device may
+    /// use a lower I/O voltage than the host.
+    pub fn release(&mut self, button: &str) -> Result<()> {
+        self.gpio(button)?.set_mode(GpioMode::DigitalIn)
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +343,9 @@ mod tests {
         }
         fn uart(&mut self) -> Option<&mut dyn Uart> {
             Some(self)
+        }
+        fn gpio(&mut self, _: &str) -> Option<&mut dyn Gpio> {
+            None
         }
         fn screen(&mut self) -> Result<Vec<u8>> {
             Ok(b"P6 1 1 255 abc".to_vec())

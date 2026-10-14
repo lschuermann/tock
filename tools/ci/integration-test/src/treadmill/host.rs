@@ -81,7 +81,7 @@ pub fn unrunnable(planned: &PlannedTest, fleet: &[HostSpec]) -> Option<String> {
     }
     Some(format!(
         "no Treadmill host has a {board} DUT with all of: {}",
-        planned.test.describe_requirements()
+        planned.test.describe_requirements(board)
     ))
 }
 
@@ -90,7 +90,7 @@ pub fn unrunnable(planned: &PlannedTest, fleet: &[HostSpec]) -> Option<String> {
 /// provide all of its requirements.
 pub fn host_requirements(plan: &Plan) -> BTreeSet<String> {
     (plan.tests.iter())
-        .map(|planned| planned.test.describe_requirements())
+        .map(|planned| planned.test.describe_requirements(planned.board))
         .collect()
 }
 
@@ -119,6 +119,9 @@ pub fn host_predicate(plan: &Plan) -> String {
 fn dut_condition(requirement: Requirement) -> String {
     match requirement {
         Requirement::Uart => "has(d.console)".to_string(),
+        // Host specs do not wire GPIOs to the host yet (see
+        // `DutConfig::satisfies`):
+        Requirement::Gpio(_) => "false".to_string(),
         Requirement::Feature(_) => "true".to_string(),
     }
 }

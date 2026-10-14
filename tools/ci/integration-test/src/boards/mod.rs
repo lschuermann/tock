@@ -43,7 +43,11 @@ pub struct Board {
     /// Entries can reference variables from libtock-c's `Configuration.mk` as
     /// those get expanded by the call to `make`.
     pub tock_targets: &'static [&'static str],
-    /// Features which the board provides to tests, beyond its console.
+    /// Logical names of the board's GPIOs, mapped to the backend's name for
+    /// each (e.g., the QEMU key which stands in for a button).
+    pub pins: &'static [(&'static str, &'static str)],
+    /// Features which the board provides to tests, beyond its console and
+    /// GPIOs.
     pub features: &'static [Feature],
     /// Upper bounds on the duration of certain board-specific operations.
     pub timing: Timing,
@@ -90,6 +94,8 @@ impl AttachedDut {
     pub fn satisfies(&self, requirement: Requirement) -> bool {
         match requirement {
             Requirement::Uart => self.config.console.is_some(),
+            // Neither `--dut` nor host specs wire GPIOs to the host yet:
+            Requirement::Gpio(_) => false,
             Requirement::Feature(Feature::Display) => true,
         }
     }
@@ -160,7 +166,7 @@ pub struct Timing {
     pub expect: Duration,
 }
 
-/// Feature of a board, beyond its console, which tests may require.
+/// Feature of a board, beyond its console and GPIOs, which tests may require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
     /// The board has a screen, which its backend captures through
@@ -199,8 +205,17 @@ impl Board {
     pub fn provides(&self, requirement: Requirement) -> bool {
         match requirement {
             Requirement::Uart => true,
+            Requirement::Gpio(name) => self.pin(name).is_some(),
             Requirement::Feature(feature) => self.features.contains(&feature),
         }
+    }
+
+    /// Return the backend's name for the GPIO with the logical name `name`, or
+    /// `None` if the board has no such GPIO.
+    pub fn pin(&self, name: &str) -> Option<&'static str> {
+        (self.pins.iter())
+            .find(|(n, _)| *n == name)
+            .map(|(_, pin)| *pin)
     }
 }
 
@@ -275,6 +290,44 @@ pub trait Uart {
     }
 }
 
+/// Direction of a GPIO, as seen from the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioMode {
+    DigitalIn,
+    DigitalOut,
+}
+
+/// GPIO of a device, driven by the host.
+///
+/// Implementations provide [`Gpio::configure`] and [`Gpio::drive`]. Callers
+/// use [`Gpio::set_mode`] and [`Gpio::write`], which also log each change.
+pub trait Gpio {
+    /// Configure the GPIO in `mode`.
+    fn configure(&mut self, mode: GpioMode) -> Result<()>;
+    /// Drive the GPIO high or low.
+    fn drive(&mut self, high: bool) -> Result<()>;
+
+    /// Return the level of the device's pin while the component connected to
+    /// it (e.g., a button) is active.
+    ///
+    /// The default implementation returns `false` (active low).
+    fn active_high(&self) -> bool {
+        false
+    }
+
+    /// Configure the GPIO in `mode`, and log the change.
+    fn set_mode(&mut self, mode: GpioMode) -> Result<()> {
+        log::debug!("  setting GPIO to {mode:?}");
+        self.configure(mode)
+    }
+
+    /// Drive the GPIO high or low, and log the change.
+    fn write(&mut self, high: bool) -> Result<()> {
+        log::debug!("  driving GPIO {}", if high { "high" } else { "low" });
+        self.drive(high)
+    }
+}
+
 /// Device under test.
 ///
 /// Whereas a [`Board`] statically describes a board "kind", a `Dut` is a single
@@ -293,6 +346,9 @@ pub trait Dut {
     fn reset(&mut self) -> Result<()>;
     /// Return the device's console, or `None` if the device has no console.
     fn uart(&mut self) -> Option<&mut dyn Uart>;
+    /// Return the device's GPIO with the logical name `name`, or `None` if the
+    /// device has no such GPIO.
+    fn gpio(&mut self, name: &str) -> Option<&mut dyn Gpio>;
     /// Capture the device's screen as a PPM image.
     ///
     /// The default implementation returns an error, for devices without a

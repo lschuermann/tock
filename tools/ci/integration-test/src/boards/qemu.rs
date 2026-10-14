@@ -14,7 +14,7 @@
 
 use crate::boards::helpers::console_buffer::ConsoleBuffer;
 use crate::boards::helpers::{command, tockloader};
-use crate::boards::{BOARDS, Board, Dut, Feature, Open, Timing, Uart};
+use crate::boards::{BOARDS, Board, Dut, Feature, Gpio, GpioMode, Open, Timing, Uart};
 use anyhow::{Context, Result, anyhow, bail};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -38,6 +38,13 @@ pub static RV64_VIRT: Board = Board {
     dir: "boards/configurations/qemu_rv64_virt/qemu_rv64_virt-test-ci",
     kernel: "target/riscv64imac-unknown-none-elf/release/qemu_rv64_virt-test-ci.bin",
     tock_targets: &["$(QEMU_RV64_VIRT_TOCK_TARGETS)"],
+    // Keys which the kernel maps to buttons:
+    pins: &[
+        ("button0", "up"),
+        ("button1", "backspace"),
+        ("button2", "down"),
+        ("button3", "ret"),
+    ],
     features: &[Feature::Display],
     timing: TIMING,
     open: Open::Virtual(|tock| {
@@ -60,6 +67,7 @@ pub static HIFIVE1: Board = Board {
     dir: "boards/hifive1",
     kernel: "target/riscv32imac-unknown-none-elf/release/hifive1.bin",
     tock_targets: &["rv32imac|rv32imac.0x20040080.0x80002800|0x20040080|0x80002800"],
+    pins: &[],
     features: &[],
     timing: TIMING,
     open: Open::Virtual(|tock| {
@@ -100,6 +108,10 @@ pub struct Qemu {
     qmp: Option<BufReader<UnixStream>>,
     console: Option<UnixStream>,
     output: ConsoleBuffer,
+    /// Key of the GPIO which [`Dut::gpio`] returned last.
+    key: &'static str,
+    /// Keys which are held down.
+    held: Vec<&'static str>,
 }
 
 impl Qemu {
@@ -113,6 +125,8 @@ impl Qemu {
             qmp: None,
             console: None,
             output: ConsoleBuffer::new(),
+            key: "",
+            held: Vec::new(),
         }
     }
 
@@ -242,11 +256,48 @@ impl Dut for Qemu {
         Some(self)
     }
 
+    fn gpio(&mut self, name: &str) -> Option<&mut dyn Gpio> {
+        self.key = self.board.pin(name)?;
+        Some(self)
+    }
+
     fn screen(&mut self) -> Result<Vec<u8>> {
         let dir = self.dir.as_ref().context("QEMU is not running")?;
         let path = dir.path().join("screen.ppm");
         self.qmp("screendump", json!({ "filename": path }))?;
         Ok(fs_err::read(&path)?)
+    }
+}
+
+/// Button, which is pressed by holding down the key which the kernel maps to
+/// it.
+impl Gpio for Qemu {
+    fn configure(&mut self, mode: GpioMode) -> Result<()> {
+        match mode {
+            GpioMode::DigitalIn => self.drive(false),
+            GpioMode::DigitalOut => Ok(()),
+        }
+    }
+
+    fn drive(&mut self, down: bool) -> Result<()> {
+        let key = self.key;
+        if self.held.contains(&key) == down {
+            return Ok(());
+        }
+        let event = json!({ "down": down, "key": { "type": "qcode", "data": key } });
+        self.qmp(
+            "input-send-event",
+            json!({ "events": [{ "type": "key", "data": event }] }),
+        )?;
+        match down {
+            true => self.held.push(key),
+            false => self.held.retain(|k| *k != key),
+        }
+        Ok(())
+    }
+
+    fn active_high(&self) -> bool {
+        true
     }
 }
 

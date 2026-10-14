@@ -6,7 +6,7 @@ use crate::boards::{AttachedDut, Dut, Open};
 use crate::host_spec::HostSpec;
 use crate::plan::{Plan, PlannedTest, Selection};
 use crate::prebuild::{self, BuildArgs};
-use crate::test_cases::{Requirement, TestOutcome};
+use crate::test_cases::TestOutcome;
 use crate::treadmill::JobArgs;
 use anyhow::{Context, Result, bail, ensure};
 use fs_err as fs;
@@ -259,7 +259,7 @@ fn open_dut(
         bail!("no {board} DUT given (with --dut or --host-spec)");
     };
     if !missing.is_empty() {
-        let missing: Vec<String> = missing.iter().map(Requirement::describe).collect();
+        let missing: Vec<String> = missing.iter().map(|r| r.describe(board)).collect();
         bail!(
             "no {board} DUT given provides all requirements, missing: {}",
             missing.join(", ")

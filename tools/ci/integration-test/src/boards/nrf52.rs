@@ -9,7 +9,7 @@
 
 use crate::boards::helpers::serial::SerialUart;
 use crate::boards::helpers::{command, openocd, tockloader};
-use crate::boards::{BOARDS, Board, Dut, DutConfig, Open, Timing, Uart};
+use crate::boards::{BOARDS, Board, Dut, DutConfig, Gpio, Open, Timing, Uart};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
@@ -22,6 +22,7 @@ pub static NRF52840DK: Board = Board {
     dir: "boards/nordic/nrf52840dk",
     kernel: "target/thumbv7em-none-eabi/release/nrf52840dk.bin",
     tock_targets: &["cortex-m4"],
+    pins: &[],
     features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
@@ -38,6 +39,7 @@ pub static NRF52DK: Board = Board {
     dir: "boards/nordic/nrf52dk",
     kernel: "target/thumbv7em-none-eabi/release/nrf52dk.bin",
     tock_targets: &["cortex-m4"],
+    pins: &[],
     features: &[],
     timing: Timing {
         flash: Duration::from_secs(30),
@@ -124,5 +126,9 @@ impl Dut for Nrf52Board {
 
     fn uart(&mut self) -> Option<&mut dyn Uart> {
         self.console.as_mut().map(|c| c as &mut dyn Uart)
+    }
+
+    fn gpio(&mut self, _name: &str) -> Option<&mut dyn Gpio> {
+        None
     }
 }
