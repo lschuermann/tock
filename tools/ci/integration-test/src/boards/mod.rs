@@ -6,7 +6,7 @@ pub mod helpers;
 pub mod nrf52;
 pub mod qemu;
 
-use crate::test_cases::Requirement;
+use crate::test_cases::{Requirement, TestCase};
 use anyhow::{Context, Result, anyhow, bail};
 use std::path::Path;
 use std::time::Duration;
@@ -25,8 +25,8 @@ pub static BOARDS: [Board];
 /// [`name`](Board::name).
 #[derive(Debug)]
 pub struct Board {
-    /// Name of the board in plans, test ids and on the command line. This name
-    /// must be unique among [`BOARDS`].
+    /// Name of the board in plans, test ids, host specs and on the command
+    /// line. This name must be unique among [`BOARDS`].
     pub name: &'static str,
     /// Tock board directory in which the kernel is built, relative to the Tock
     /// repository.
@@ -77,6 +77,12 @@ impl AttachedDut {
             .collect()
     }
 
+    /// Check if the board, as it is attached to this host, provides all
+    /// requirements of `test`.
+    pub fn can_run(&self, test: &TestCase) -> bool {
+        test.requires.iter().all(|r| self.satisfies(*r))
+    }
+
     /// Check if the board, as it is attached to this host, provides
     /// `requirement`.
     pub fn satisfies(&self, requirement: Requirement) -> bool {
@@ -114,7 +120,7 @@ impl std::str::FromStr for AttachedDut {
         let mut fields = s.split(',');
 
         let board = Board::from_name(fields.next().unwrap_or_default())?;
-        if matches!(board.open, Open::Virtual(_)) {
+        if board.is_virtual() {
             bail!("{board} is virtual, `--dut` is not supported for it");
         }
 
@@ -164,6 +170,12 @@ impl Board {
                 names.join(", ")
             )
         })
+    }
+
+    /// Check if the board is virtual, such that it needs no DUT attached to the
+    /// host.
+    pub fn is_virtual(&self) -> bool {
+        matches!(self.open, Open::Virtual(_))
     }
 
     /// Check if the board provides `requirement`.

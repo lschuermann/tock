@@ -66,6 +66,16 @@ pub enum TestOutcome {
     },
 }
 
+impl TestOutcome {
+    /// Check if the test or the infrastructure failed.
+    pub fn failed(&self) -> bool {
+        matches!(
+            self,
+            TestOutcome::Failed { .. } | TestOutcome::InfraFailed { .. }
+        )
+    }
+}
+
 /// Flash `kernel` and `apps` onto `dut` and run the steps of `case`.
 ///
 /// Flashing failures are reported as infrastructure failures.

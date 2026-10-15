@@ -87,7 +87,6 @@ in
     # The defaults "objcopy" and "objdump" are wrong (stem from the standard
     # environment for x86), use "llvm-obj{copy,dump}" as defined in the makefile
     shellHook = ''
-      unset OBJCOPY
-      unset OBJDUMP
+      unset OBJCOPY OBJDUMP AR AS CXX RANLIB
     '';
   }

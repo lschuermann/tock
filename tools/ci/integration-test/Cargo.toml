@@ -12,7 +12,8 @@ edition.workspace = true
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 comfy-table = { version = "8.0.1", default-features = false }
-env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
+env_logger = { version = "0.11.11", default-features = false }
 fs-err = "3.3.2"
 humantime = "2"
 log = "0.4.34"

@@ -69,6 +69,15 @@ impl TestCase {
         let steps: std::time::Duration = self.steps.iter().map(|s| s.cost(timing)).sum();
         timing.flash + timing.boot + steps
     }
+
+    /// Return a description of what this test requires of a board, which lists
+    /// each requirement once.
+    pub fn describe_requirements(&self) -> String {
+        let mut needs: Vec<String> = self.requires.iter().map(|r| r.describe()).collect();
+        needs.sort();
+        needs.dedup();
+        needs.join(", ")
+    }
 }
 
 /// Serialization of a `&'static TestCase` as its [`id`](TestCase::id), for use

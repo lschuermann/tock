@@ -42,7 +42,7 @@ pub struct Plan {
 }
 
 /// A test, planned on a specific board.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PlannedTest {
     #[serde(with = "crate::test_cases::by_id")]
     pub test: &'static TestCase,
@@ -181,20 +181,69 @@ impl Plan {
     }
 
     /// Filter tests and artifacts by `selection`.
-    pub fn select(mut self, selection: &Selection) -> Result<Plan> {
+    ///
+    /// An `anyboard` selector picks one board for each test which it matches
+    /// and no other selector includes. It prefers boards which other selected
+    /// tests already use, such that the plan needs fewer kernels (and hosts).
+    /// Otherwise, it picks the test's first board.
+    pub fn select(&self, selection: &Selection) -> Result<Plan> {
         for selector in &selection.tests {
             ensure!(
                 self.tests.iter().any(|t| selector.matches(t.test, t.board)),
                 "--test {selector} matches no planned test"
             );
         }
-        self.tests.retain(|t| selection.matches(t.test, t.board));
+        let (any, fixed): (Vec<&Selector>, Vec<&Selector>) =
+            (selection.tests.iter()).partition(|s| s.board == BoardSelector::Any);
+        let mut keep: Vec<bool> = (self.tests.iter())
+            .map(|t| selection.tests.is_empty() || fixed.iter().any(|s| s.matches(t.test, t.board)))
+            .collect();
+        let mut boards: BTreeSet<&str> = (self.tests.iter().zip(&keep))
+            .filter(|(_, keep)| **keep)
+            .map(|(t, _)| t.board.name)
+            .collect();
+        for selector in any {
+            // Indices of the planned tests which the selector may pick, by
+            // test id:
+            let mut candidates: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+            for (i, t) in self.tests.iter().enumerate() {
+                if selector.matches(t.test, t.board) {
+                    candidates.entry(t.test.id).or_default().push(i);
+                }
+            }
+            for indices in candidates.values() {
+                if indices.iter().any(|&i| keep[i]) {
+                    continue;
+                }
+                let pick = (indices.iter().copied())
+                    .find(|&i| boards.contains(self.tests[i].board.name))
+                    .unwrap_or(indices[0]);
+                keep[pick] = true;
+                boards.insert(self.tests[pick].board.name);
+            }
+        }
+        Ok(self.part(|i, _| keep[i]))
+    }
 
-        let used: BTreeSet<&String> = (self.tests.iter())
+    /// Return the part of this plan with the tests for which `test` returns
+    /// `true`, along with the artifacts these tests use.
+    ///
+    /// `test` receives the index of each test in [`Plan::tests`].
+    pub fn part(&self, test: impl Fn(usize, &PlannedTest) -> bool) -> Plan {
+        let tests: Vec<PlannedTest> = (self.tests.iter().enumerate())
+            .filter(|(i, t)| test(*i, t))
+            .map(|(_, t)| t.clone())
+            .collect();
+        let used: BTreeSet<&String> = (tests.iter())
             .flat_map(|t| std::iter::once(&t.kernel).chain(&t.apps))
             .collect();
-        self.artifacts.retain(|label, _| used.contains(label));
-        Ok(self)
+        Plan {
+            artifacts: (self.artifacts.iter())
+                .filter(|(label, _)| used.contains(label))
+                .map(|(label, spec)| (label.clone(), spec.clone()))
+                .collect(),
+            tests,
+        }
     }
 
     /// Return a human-readable summary of the plan.
@@ -238,33 +287,40 @@ impl Plan {
 /// selects all tests.
 #[derive(Default, clap::Args)]
 pub struct Selection {
-    /// Select tests by `<test>@<board>` (`alltests` and `allboards` match any).
-    /// May be repeated.
+    /// Select tests by `<test>@<board>` (`alltests` and `allboards` match any,
+    /// and `anyboard` picks one board). May be repeated.
     #[arg(long = "test", value_name = "TEST@BOARD")]
     pub tests: Vec<Selector>,
 }
 
-impl Selection {
-    /// Check if this selection includes `test` on `board`.
-    fn matches(&self, test: &TestCase, board: &Board) -> bool {
-        self.tests.is_empty() || self.tests.iter().any(|s| s.matches(test, board))
-    }
-}
-
-/// A single `--test` selector, which matches one or all tests on one or all
-/// boards.
+/// A single `--test` selector, which matches one or all tests on one, all or
+/// any boards.
 #[derive(Clone)]
 pub struct Selector {
     /// Selected test, or `None` to select all tests.
     pub test: Option<&'static TestCase>,
-    /// Selected board, or `None` to select all boards.
-    pub board: Option<&'static Board>,
+    pub board: BoardSelector,
+}
+
+/// Boards matched by a [`Selector`].
+#[derive(Clone, Copy, PartialEq)]
+pub enum BoardSelector {
+    One(&'static Board),
+    /// All boards (`allboards`).
+    All,
+    /// Any one board (`anyboard`), which [`Plan::select`] picks.
+    Any,
 }
 
 impl Selector {
-    /// Check if this selector matches `test` on `board`.
+    /// Check if this selector matches `test` on `board`. An `anyboard`
+    /// selector matches every board which it may pick.
     fn matches(&self, test: &TestCase, board: &Board) -> bool {
-        self.test.is_none_or(|t| t.id == test.id) && self.board.is_none_or(|b| b == board)
+        self.test.is_none_or(|t| t.id == test.id)
+            && match self.board {
+                BoardSelector::One(b) => b == board,
+                BoardSelector::All | BoardSelector::Any => true,
+            }
     }
 }
 
@@ -275,7 +331,7 @@ impl std::str::FromStr for Selector {
         let (test, board) = s.split_once('@').ok_or_else(|| {
             anyhow!(
                 "expected `<test>@<board>` (<test> can be `alltests`, \
-                 <board> can be `allboards` (e.g. `{s}@allboards`)"
+                 <board> can be `allboards` or `anyboard` (e.g. `{s}@allboards`)"
             )
         })?;
         let test = match test {
@@ -283,8 +339,9 @@ impl std::str::FromStr for Selector {
             _ => Some(TestCase::from_id(test)?),
         };
         let board = match board {
-            "allboards" => None,
-            _ => Some(Board::from_name(board)?),
+            "allboards" => BoardSelector::All,
+            "anyboard" => BoardSelector::Any,
+            _ => BoardSelector::One(Board::from_name(board)?),
         };
         Ok(Selector { test, board })
     }
@@ -293,7 +350,11 @@ impl std::str::FromStr for Selector {
 impl std::fmt::Display for Selector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let test = self.test.map_or("alltests", |t| t.id);
-        let board = self.board.map_or("allboards", |b| b.name);
+        let board = match self.board {
+            BoardSelector::One(board) => board.name,
+            BoardSelector::All => "allboards",
+            BoardSelector::Any => "anyboard",
+        };
         write!(f, "{test}@{board}")
     }
 }
@@ -340,6 +401,16 @@ mod tests {
         assert!(
             error.to_string().contains("matches no planned test"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn anyboard_picks_one_board_preferring_those_already_used() {
+        assert_eq!(select(&["hello_world@anyboard"]).len(), 1);
+        // A test which another selector already includes is not added again:
+        assert_eq!(
+            select(&["hello_world@nrf52840dk", "hello_world@anyboard"]),
+            ["hello_world@nrf52840dk"]
         );
     }
 

@@ -3,10 +3,13 @@
 // Copyright Tock Contributors 2026.
 
 mod boards;
+mod host_spec;
+mod logging;
 mod plan;
 mod prebuild;
 mod run;
 mod test_cases;
+mod treadmill;
 
 use clap::Parser;
 use std::process::ExitCode;
@@ -25,32 +28,25 @@ struct Cli {
 enum Subcommand {
     /// Step 1: generate a plan of tests and compute the artifacts they require
     Plan(plan::Args),
-    /// Step 2: build the artifacts of a plan (kernels, applications, ...)
+    /// Step 2: build the artifacts of a plan (kernels, applications, ...) and
+    /// the harness for Treadmill hosts
     Prebuild(prebuild::Args),
     /// Step 3: run the tests of a plan on a board attached to this host
     Run(run::Args),
+    /// Run the tests of a prebuilt plan on Treadmill jobs attached to their
+    /// boards
+    Treadmill(treadmill::Args),
 }
 
 fn main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
-    let level = match cli.verbose {
-        0 => log::LevelFilter::Info,
-        1 => log::LevelFilter::Debug,
-        _ => log::LevelFilter::Trace,
-    };
-
-    env_logger::Builder::new()
-        .filter_level(level)
-        .parse_default_env()
-        .format_timestamp(None)
-        .format_target(false)
-        .format_indent(Some(8))
-        .init();
+    logging::init(cli.verbose);
 
     match cli.command {
         Subcommand::Plan(args) => args.run().map(|()| ExitCode::SUCCESS),
         Subcommand::Prebuild(args) => args.run().map(|()| ExitCode::SUCCESS),
         Subcommand::Run(args) => args.run(),
+        Subcommand::Treadmill(args) => args.run(),
     }
 }

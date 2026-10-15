@@ -3,9 +3,11 @@
 // Copyright Tock Contributors 2026.
 
 use crate::boards::{AttachedDut, Dut, Open};
+use crate::host_spec::HostSpec;
 use crate::plan::{Plan, PlannedTest, Selection};
 use crate::prebuild::{self, BuildArgs};
 use crate::test_cases::{Requirement, TestOutcome};
+use crate::treadmill::JobArgs;
 use anyhow::{Context, Result, bail, ensure};
 use fs_err as fs;
 use log::{info, warn};
@@ -35,6 +37,11 @@ pub struct Args {
     /// `<board>[,probe=<serial>][,console=<device>]` (may be repeated)
     #[arg(long, value_name = "DUT")]
     dut: Vec<AttachedDut>,
+    /// Host spec describing the DUTs attached to this host (replaces `--dut`)
+    #[arg(long, conflicts_with = "dut")]
+    host_spec: Option<PathBuf>,
+    #[command(flatten)]
+    job: JobArgs,
     /// Run only part of the plan
     #[command(flatten)]
     selection: Selection,
@@ -96,7 +103,7 @@ impl Args {
 
         // Virtual boards run from their board directory in the Tock repository:
         let tock = self.tock.as_deref();
-        let virtual_test = (plan.tests.iter()).find(|t| matches!(t.board.open, Open::Virtual(_)));
+        let virtual_test = plan.tests.iter().find(|t| t.board.is_virtual());
         if let (None, Some(planned)) = (tock, virtual_test) {
             bail!(
                 "--tock is required to run {}, which is virtual",
@@ -106,19 +113,19 @@ impl Args {
 
         fs::create_dir_all(&logs)?;
 
-        print_banner(&plan);
-        let reports = run_tests(&plan, &artifacts, tock, &self.dut, &logs);
+        let host_spec = self.host_spec.as_deref().map(HostSpec::load).transpose()?;
+        let duts = match &host_spec {
+            Some(spec) => spec.duts.iter().filter_map(|dut| dut.attached()).collect(),
+            None => self.dut,
+        };
+        print_banner(&plan, host_spec.as_ref(), &self.job);
+        let reports = run_tests(&plan, &artifacts, tock, &duts, &logs);
         let json = serde_json::to_string_pretty(&reports).unwrap();
         fs::write(&results, json)?;
         println!("{}", summary_table(&reports));
 
-        let failed = reports.iter().any(|r| {
-            matches!(
-                r.outcome,
-                TestOutcome::Failed { .. } | TestOutcome::InfraFailed { .. }
-            )
-        });
-        Ok(match failed {
+        self.job.report(&reports);
+        Ok(match reports.iter().any(|r| r.outcome.failed()) {
             true => ExitCode::FAILURE,
             false => ExitCode::SUCCESS,
         })
@@ -126,9 +133,9 @@ impl Args {
 }
 
 #[derive(Serialize)]
-struct TestReport {
-    id: String,
-    outcome: TestOutcome,
+pub struct TestReport {
+    pub id: String,
+    pub outcome: TestOutcome,
 }
 
 /// Width of the summary table.
@@ -239,7 +246,7 @@ fn open_dut(
         .map(|dut| (dut, dut.missing(requires)))
         .min_by_key(|(_, missing)| missing.len());
     let Some((dut, missing)) = closest else {
-        bail!("no {board} DUT given with --dut");
+        bail!("no {board} DUT given (with --dut or --host-spec)");
     };
     if !missing.is_empty() {
         let missing: Vec<String> = missing.iter().map(Requirement::describe).collect();
@@ -263,8 +270,9 @@ fn write_log(dir: &Path, id: &str, transcript: &[u8]) {
     }
 }
 
-/// Print a banner announcing the run and summarizing `plan`.
-fn print_banner(plan: &Plan) {
+/// Print a banner announcing the run, which summarizes the Treadmill job, the
+/// host and `plan`.
+fn print_banner(plan: &Plan, host_spec: Option<&HostSpec>, job: &JobArgs) {
     let rule = "=".repeat(72);
     info!("{rule}");
     info!(
@@ -275,6 +283,12 @@ fn print_banner(plan: &Plan) {
         "  time:     {}",
         humantime::format_rfc3339_seconds(SystemTime::now())
     );
+    info!("  job:      {}", job.describe_job());
+    let host = host_spec.map_or("- (no host spec)".to_string(), HostSpec::summary);
+    info!("  host:     {host}");
+    if let Some(launched_by) = &job.launched_by {
+        info!("  launched: {launched_by}");
+    }
     for line in plan.summary().lines() {
         info!("  {line}");
     }

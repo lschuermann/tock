@@ -9,7 +9,18 @@ use anyhow::{Context, Result, ensure};
 use fs_err as fs;
 use log::info;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Architecture of each Treadmill host (as reported by `uname -m`), along with
+/// the target of the harness built to run there.
+///
+/// The harness is linked statically with `rust-lld` (see
+/// `.cargo/config.toml`), such that it needs no system libraries or cross
+/// toolchain.
+pub const HOST_TARGETS: &[(&str, &str)] = &[
+    ("x86_64", "x86_64-unknown-linux-musl"),
+    ("aarch64", "aarch64-unknown-linux-musl"),
+];
 
 #[derive(clap::Args)]
 pub struct BuildArgs {
@@ -29,13 +40,75 @@ pub struct Args {
     plan: PathBuf,
     #[command(flatten)]
     build: BuildArgs,
+    /// Tar archive to pack the output directory into
+    #[arg(long)]
+    archive: Option<PathBuf>,
 }
 
 impl Args {
-    /// Build the artifacts of the plan at `plan`.
+    /// Build the artifacts of the plan at `plan`, and the harness for each of
+    /// the [`HOST_TARGETS`].
     pub fn run(self) -> Result<()> {
-        build(&Plan::load(&self.plan)?, &self.build)
+        build(&Plan::load(&self.plan)?, &self.build)?;
+        for (arch, target) in HOST_TARGETS {
+            let built = build_harness(target)?;
+            fs::copy(
+                &built,
+                self.build
+                    .artifacts_dir
+                    .join(format!("tock-integration-test-harness-{arch}")),
+            )?;
+        }
+        if let Some(archive) = &self.archive {
+            pack(&self.build.artifacts_dir, archive)?;
+            info!("wrote {}", archive.display());
+        }
+        Ok(())
     }
+}
+
+/// Build the harness for `target`, and return the path of the binary.
+fn build_harness(target: &str) -> Result<PathBuf> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = Command::new(cargo)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["build", "--release", "-p", env!("CARGO_PKG_NAME")])
+        .args([
+            "--target",
+            target,
+            "--message-format=json-render-diagnostics",
+        ])
+        .stderr(Stdio::inherit())
+        .output()
+        .context("failed to run cargo")?;
+    ensure!(
+        output.status.success(),
+        "harness build failed for {target} ({})",
+        output.status
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|msg| Some(PathBuf::from(msg.get("executable")?.as_str()?)))
+        .with_context(|| format!("cargo reported no executable for {target}"))
+}
+
+/// Pack the contents of `dir` into the tar archive `archive`.
+pub fn pack(dir: &Path, archive: &Path) -> Result<()> {
+    let status = Command::new("tar")
+        .arg("-C")
+        .arg(dir)
+        .arg("-cf")
+        .arg(archive)
+        .arg(".")
+        .status()
+        .context("failed to run tar")?;
+    ensure!(
+        status.success(),
+        "failed to create {} ({status})",
+        archive.display()
+    );
+    Ok(())
 }
 
 /// Build the artifacts of `plan` into the artifacts directory.
