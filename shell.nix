@@ -23,9 +23,10 @@ let
   tockloader = import (pkgs.fetchFromGitHub {
     owner = "tock";
     repo = "tockloader";
-    # v1.16.0-25-ga865b6f (including nrfutil backend)
-    rev = "a865b6f93f63b2af377546e8ad5c85b0a1fd53d1";
-    sha256 = "sha256-bgA86FBa/va0kAXe4hn3wgBSidHY2GPmjYoatNmJd7I=";
+    # v1.18.1-17-gb1b0cce (including flash file support for the STM32F4,
+    # Raspberry Pi Pico and ESP32-C3 boards)
+    rev = "b1b0cce04bd86fd524fb40a80bcda07a4cb39c63";
+    sha256 = "sha256-AO33lrHtrVvLu4tkkFaRWmA7GwxIryl8DvU86RfDRj4=";
   }) { inherit pkgs withUnfreePkgs; };
 
   rust_overlay = import "${pkgs.fetchFromGitHub {
