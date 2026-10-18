@@ -8,6 +8,7 @@
 #
 #  * `tockloader`
 #  * rust
+#  * a RISC-V GCC cross-compiler (`riscv64-none-elf-gcc`)
 #
 # To use:
 #
@@ -53,6 +54,12 @@ in
       llvm
       rustBuild
       openocd
+
+      # Bare-metal RISC-V C compiler (`riscv64-none-elf-gcc`, which also builds
+      # RV32 code), for C code that runs next to the kernel, such as the BLE
+      # controller sandbox of the ESP32-C3 boards. Pre-built in the nixpkgs
+      # binary cache.
+      pkgsCross.riscv64-embedded.buildPackages.gcc
 
       # --- Convenience and support packages ---
       python3
