@@ -4,6 +4,7 @@
 
 //! TimG Group driver.
 
+use core::cell::Cell;
 use core::marker::PhantomData;
 
 use kernel::ErrorCode;
@@ -148,6 +149,9 @@ pub struct TimG<'a, F: time::Frequency, const C3: bool> {
     registers: StaticRef<TimgRegisters>,
     clocksource: ClockSource,
     alarm_client: OptionalCell<&'a dyn time::AlarmClient>,
+    /// Whether `start` has configured the counter. Until then, it may still
+    /// run with the configuration the boot ROM left.
+    configured: Cell<bool>,
     _phantom: PhantomData<F>,
 }
 
@@ -157,6 +161,7 @@ impl<F: time::Frequency, const C3: bool> TimG<'_, F, C3> {
             registers: base,
             clocksource,
             alarm_client: OptionalCell::empty(),
+            configured: Cell::new(false),
             _phantom: PhantomData,
         }
     }
@@ -167,7 +172,9 @@ impl<F: time::Frequency, const C3: bool> TimG<'_, F, C3> {
         } else {
             self.registers.int_clr.modify(INT::T0::SET);
         }
-        let _ = self.stop();
+        // The alarm has fired; the counter keeps running, as it is the time
+        // base for `now`.
+        let _ = self.disarm();
         self.alarm_client.map(|client| {
             client.alarm();
         });
@@ -206,8 +213,25 @@ impl<F: time::Frequency, const C3: bool> time::Time for TimG<'_, F, C3> {
 }
 
 impl<'a, F: time::Frequency, const C3: bool> Counter<'a> for TimG<'a, F, C3> {
+    /// Configure the counter as a free-running up-counter and start it.
     fn start(&self) -> Result<(), ErrorCode> {
-        self.registers.t0config.write(CONFIG::EN::SET);
+        // The divider must only change while the counter is disabled.
+        self.registers.t0config.modify(CONFIG::EN::CLEAR);
+        self.registers.t0config.modify(
+            CONFIG::USE_XTAL.val(self.clocksource as u32)
+                + CONFIG::AUTORELOAD::CLEAR
+                + CONFIG::INCREASE::SET
+                + CONFIG::DIVIDER.val(2 * (2 - self.clocksource as u32)),
+        );
+
+        if C3 {
+            self.registers
+                .t0config
+                .modify(CONFIG::EDGE_INT_EN_OR_DIVIDER_RST::SET);
+        }
+
+        self.registers.t0config.modify(CONFIG::EN::SET);
+        self.configured.set(true);
 
         Ok(())
     }
@@ -239,22 +263,13 @@ impl<'a, F: time::Frequency, const C3: bool> Alarm<'a> for TimG<'a, F, C3> {
             expire = now;
         }
 
-        self.registers
-            .t0config
-            .modify(CONFIG::ALARM_EN::CLEAR + CONFIG::EN::CLEAR);
-
-        self.registers.t0config.modify(
-            CONFIG::USE_XTAL.val(self.clocksource as u32)
-                + CONFIG::AUTORELOAD::CLEAR
-                + CONFIG::INCREASE::SET
-                + CONFIG::DIVIDER.val(2 * (2 - self.clocksource as u32)),
-        );
-
-        if C3 {
-            self.registers
-                .t0config
-                .modify(CONFIG::EDGE_INT_EN_OR_DIVIDER_RST::SET);
+        // Stopping the counter would also stop the time base. It only needs to
+        // be started once; an alarm that has already passed fires as soon as
+        // it is enabled.
+        if !self.configured.get() || !self.is_running() {
+            let _ = self.start();
         }
+        self.registers.t0config.modify(CONFIG::ALARM_EN::CLEAR);
 
         let val = expire.into_u64();
         let high = (val >> 32) as u32;
@@ -270,9 +285,7 @@ impl<'a, F: time::Frequency, const C3: bool> Alarm<'a> for TimG<'a, F, C3> {
             self.registers.int_ena.modify(INT::T0::SET);
         }
 
-        self.registers
-            .t0config
-            .modify(CONFIG::ALARM_EN::SET + CONFIG::EN::SET);
+        self.registers.t0config.modify(CONFIG::ALARM_EN::SET);
     }
 
     fn get_alarm(&self) -> Self::Ticks {
