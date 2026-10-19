@@ -15,22 +15,25 @@ use kernel::hil::led::Led;
 
 /// The single-wire, tri-color (RGB) LED.
 ///
-/// The pulses need to be calibrated based on the clock speed of the chip.
-/// - `T0H`: Number of nops needed for about 0.28 us. This is then scaled for
-///   `T0L`, `T1H`, and `T1L`.
-pub struct Sk68xx<'a, P: Pin, const T0H: usize> {
+/// The chip provides `write_frame`, which sends one 24-bit frame on `pin`. The
+/// frame holds the green, red and blue bytes in its lower 24 bits, with green
+/// in the most significant byte. Before each frame, `write_frame` must hold
+/// the line low for the LED's reset time, which latches the previous frame.
+/// The pulse widths depend on the chip's clock and must not be stretched (e.g.,
+/// by interrupts), so this capsule cannot generate them itself.
+pub struct Sk68xx<'a, P: Pin> {
     pin: &'a P,
-    nop: fn(),
+    write_frame: fn(&P, u32),
     red: Cell<bool>,
     green: Cell<bool>,
     blue: Cell<bool>,
 }
 
-impl<'a, P: Pin, const T0H: usize> Sk68xx<'a, P, T0H> {
-    pub fn new(pin: &'a P, nop: fn()) -> Self {
+impl<'a, P: Pin> Sk68xx<'a, P> {
+    pub fn new(pin: &'a P, write_frame: fn(&P, u32)) -> Self {
         Self {
             pin,
-            nop,
+            write_frame,
             red: Cell::new(false),
             green: Cell::new(false),
             blue: Cell::new(false),
@@ -40,60 +43,12 @@ impl<'a, P: Pin, const T0H: usize> Sk68xx<'a, P, T0H> {
     pub fn init(&self) {
         self.pin.make_output();
         self.pin.clear();
-        // Wait for 80 us.
-        for _ in 0..(286 * T0H) {
-            (self.nop)();
-        }
     }
 
     fn write(&self) {
-        let red = self.red.get();
-        let green = self.green.get();
-        let blue = self.blue.get();
-
-        for i in 0..24 {
-            let high = if i < 8 {
-                // Green
-                green
-            } else if i < 16 {
-                // Red
-                red
-            } else {
-                // Blue
-                blue
-            };
-            if high {
-                // High for 0.74 us
-                self.pin.set();
-                for _ in 0..(T0H * 3) {
-                    (self.nop)();
-                }
-
-                // Low for 0.52 us
-                self.pin.clear();
-                for _ in 0..(T0H * 2) {
-                    (self.nop)();
-                }
-            } else {
-                // High for 0.28 us
-                self.pin.set();
-                for _ in 0..T0H {
-                    (self.nop)();
-                }
-
-                // Low for 0.94 us
-                self.pin.clear();
-                for _ in 0..(T0H * 4) {
-                    (self.nop)();
-                }
-            }
-        }
-
-        // 80 us rest period after to reset the writing and permit a subsequent
-        // write to the LED.
-        for _ in 0..(286 * T0H) {
-            (self.nop)();
-        }
+        let byte = |on: bool| if on { 0xFF } else { 0 };
+        let grb = byte(self.green.get()) << 16 | byte(self.red.get()) << 8 | byte(self.blue.get());
+        (self.write_frame)(self.pin, grb);
     }
 
     fn update_red(&self, on: bool) {
@@ -144,18 +99,18 @@ impl<'a, P: Pin, const T0H: usize> Sk68xx<'a, P, T0H> {
 // - Index 0: Red
 // - Index 1: Green
 // - Index 2: Blue
-pub struct Sk68xxLed<'a, P: Pin, const T0H: usize> {
-    sk68xx: &'a Sk68xx<'a, P, T0H>,
+pub struct Sk68xxLed<'a, P: Pin> {
+    sk68xx: &'a Sk68xx<'a, P>,
     index: usize,
 }
 
-impl<'a, P: Pin, const T0H: usize> Sk68xxLed<'a, P, T0H> {
-    pub fn new(sk68xx: &'a Sk68xx<'a, P, T0H>, index: usize) -> Self {
+impl<'a, P: Pin> Sk68xxLed<'a, P> {
+    pub fn new(sk68xx: &'a Sk68xx<'a, P>, index: usize) -> Self {
         Self { sk68xx, index }
     }
 }
 
-impl<P: Pin, const T0H: usize> Led for Sk68xxLed<'_, P, T0H> {
+impl<P: Pin> Led for Sk68xxLed<'_, P> {
     fn init(&self) {}
 
     fn on(&self) {

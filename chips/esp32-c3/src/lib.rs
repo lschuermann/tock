@@ -16,6 +16,7 @@ pub mod syscon;
 pub mod sysreg;
 pub mod systimer;
 pub mod usb_serial_jtag;
+pub mod ws2812;
 
 pub mod timg {
     pub use esp32::timg::{ClockSource, TIMG0_BASE, TIMG1_BASE};

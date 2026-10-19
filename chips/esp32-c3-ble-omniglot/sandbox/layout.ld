@@ -18,7 +18,7 @@
  * - `.dram1`: initialised data (mostly strings), part of `.data`.
  * - The mask ROM's libc routines, which the archives call.
  *
- * RAM ends below the kernel's `.iram` code at 0x3FCDEEB0; the kernel also
+ * RAM ends below the kernel's `.iram` code at 0x3FCDEDB0; the kernel also
  * grants the sandbox the ROM's own RAM (0x3FCDF000..0x3FCE0000).
  */
 
@@ -29,7 +29,7 @@ MEMORY
   /* The sandbox's code window. */
   FLASH (rx) : ORIGIN = 0x42080000, LENGTH = 0x40000
   IRAM  (rx) : ORIGIN = 0x40380000, LENGTH = 0x8000
-  RAM   (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEEB0
+  RAM   (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEDB0
 }
 
 /* Omniglot stack: entry points, interrupt handlers and the scheduler run on

@@ -49,10 +49,10 @@ MEMORY
   rom  (rx)  : ORIGIN = 0x42000000, LENGTH = 0x00100000
   prog (rx)  : ORIGIN = 0x42100000, LENGTH = 0x00300000
   ram  (rw)  : ORIGIN = 0x3FC88000, LENGTH = 0x00048000
-  iram (rx)  : ORIGIN = 0x403DEEB0, LENGTH = 0x00000150
+  iram (rx)  : ORIGIN = 0x403DEDB0, LENGTH = 0x00000250
 
   ble_iram (rx) : ORIGIN = 0x40380000, LENGTH = 0x8000
-  ble_ram  (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEEB0
+  ble_ram  (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEDB0
 }
 
 /* Inside `rom`; nothing of the kernel link is placed there. */

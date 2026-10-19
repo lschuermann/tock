@@ -171,6 +171,14 @@ impl<'a> GpioPin<'a> {
         }
     }
 
+    /// Get the bit of this pin in the GPIO registers with one bit per pin.
+    ///
+    /// For example, writing this value to `GPIO_OUT_W1TS` drives only this
+    /// pin high.
+    pub fn mask(&self) -> u32 {
+        self.pin.mask << self.pin.shift
+    }
+
     fn handle_interrupt(&self) {
         // Clear the interrupt
         self.registers.status_w1tc.set(1 << self.pin.shift);
