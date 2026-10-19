@@ -10,6 +10,22 @@
 //!
 //! This driver only implements the CDC-ACM ("serial port") half of the
 //! peripheral.
+//!
+//! The hardware has no interrupt for a host that disappears (e.g., an unplugged
+//! cable). A host that is gone or does not read the serial port never picks up
+//! a flushed packet, which would stall a transmission forever. Therefore, this
+//! driver follows the approach of ESP-IDF's `usb_serial_jtag` driver:
+//!
+//! - A host sends a start-of-frame (SOF) packet every 1 ms, which sets the
+//!   `SOF` bit in `INT_RAW`. When this bit stays clear for
+//!   [`DISCONNECT_TIMEOUT_MS`], the driver considers the host disconnected.
+//!   `transmit_buffer` then fails with [`ErrorCode::OFF`] until the next SOF.
+//! - When the host does not pick up a packet within [`TX_TIMEOUT_MS`], the
+//!   transmission completes with [`ErrorCode::FAIL`]. `transmit_buffer` then
+//!   fails with [`ErrorCode::OFF`] until the host picks up the packet.
+//!
+//! The driver measures these timeouts with an alarm that the board provides
+//! through [`UsbSerialJtag::set_alarm`].
 
 use core::cell::Cell;
 use core::cmp::min;
@@ -17,6 +33,7 @@ use core::cmp::min;
 use kernel::ErrorCode;
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
+use kernel::hil::time::{Alarm, AlarmClient, ConvertTicks, Ticks};
 use kernel::utilities::StaticRef;
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::cells::TakeCell;
@@ -26,6 +43,24 @@ use kernel::utilities::registers::{ReadOnly, ReadWrite, WriteOnly, register_bitf
 
 /// Maximum number of bytes the hardware will accept per IN/OUT USB packet.
 const USB_SERIAL_JTAG_PACKET_SIZE: usize = 64;
+
+/// Time without an SOF packet after which the driver considers the host
+/// disconnected.
+///
+/// A host sends an SOF packet every 1 ms. ESP-IDF tolerates up to 3 ms.
+pub const DISCONNECT_TIMEOUT_MS: u32 = 3;
+
+/// Maximum time for the host to pick up a flushed packet.
+///
+/// An idle host polls for data every 1 ms. Like ESP-IDF, we allow for a busy
+/// bus with a longer timeout.
+pub const TX_TIMEOUT_MS: u32 = 50;
+
+/// Number of polls of the panic writer for the host to pick up a packet.
+///
+/// Each poll reads a register and executes a `nop`. At 160 MHz, this takes on
+/// the order of [`TX_TIMEOUT_MS`].
+const PANIC_TX_TIMEOUT_POLLS: usize = 800_000;
 
 register_structs! {
     pub UsbSerialJtagRegisters {
@@ -174,8 +209,32 @@ register_bitfields![u32,
     ],
 ];
 
-pub struct UsbSerialJtag<'a> {
+/// Write as much of one `USB_SERIAL_JTAG_PACKET_SIZE`-sized chunk as the
+/// hardware currently has room for, then flush it. Returns the number
+/// of bytes actually written.
+fn write_chunk(regs: &UsbSerialJtagRegisters, bytes: &[u8]) -> usize {
+    let mut written = 0;
+
+    for &b in bytes.iter().take(USB_SERIAL_JTAG_PACKET_SIZE) {
+        if !regs.ep1_conf.is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE) {
+            break;
+        }
+        regs.ep1.write(EP1::RDWR_BYTE.val(b as u32));
+        written += 1;
+    }
+
+    // Flush unconditionally, even if `written == 0`. A flush with an
+    // empty buffer sends a zero-length packet, which is how a
+    // full-size packet's transfer gets terminated (see the module
+    // documentation).
+    regs.ep1_conf.modify(EP1_CONF::WR_DONE::SET);
+
+    written
+}
+
+pub struct UsbSerialJtag<'a, A: Alarm<'a>> {
     registers: StaticRef<UsbSerialJtagRegisters>,
+    alarm: OptionalCell<&'a A>,
     tx_client: OptionalCell<&'a dyn hil::uart::TransmitClient>,
     rx_client: OptionalCell<&'a dyn hil::uart::ReceiveClient>,
 
@@ -187,6 +246,15 @@ pub struct UsbSerialJtag<'a> {
     // is then required to terminate the transfer once there is nothing
     // left to send. See the module documentation.
     tx_needs_zero_length_packet: Cell<bool>,
+    // Set once a transmission timed out with the host's packet still
+    // pending. Cleared once the host picks up that packet.
+    tx_stalled: Cell<bool>,
+
+    // Whether the host sent an SOF packet recently, as of the last call to
+    // `host_connected`.
+    host_connected: Cell<bool>,
+    // Time at which `host_connected` last cleared the raw SOF interrupt.
+    sof_cleared_at: Cell<A::Ticks>,
 
     rx_buffer: TakeCell<'static, [u8]>,
     rx_index: Cell<usize>,
@@ -197,16 +265,21 @@ pub struct UsbSerialJtag<'a> {
     deferred_call: DeferredCall,
 }
 
-impl UsbSerialJtag<'_> {
+impl<'a, A: Alarm<'a>> UsbSerialJtag<'a, A> {
     pub fn new(base: StaticRef<UsbSerialJtagRegisters>) -> Self {
         let usb_serial_jtag = Self {
             registers: base,
+            alarm: OptionalCell::empty(),
             tx_client: OptionalCell::empty(),
             rx_client: OptionalCell::empty(),
             tx_buffer: TakeCell::empty(),
             tx_len: Cell::new(0),
             tx_index: Cell::new(0),
             tx_needs_zero_length_packet: Cell::new(false),
+            tx_stalled: Cell::new(false),
+            // Like ESP-IDF, assume a host until no SOF arrives.
+            host_connected: Cell::new(true),
+            sof_cleared_at: Cell::new(A::Ticks::from(0)),
             rx_buffer: TakeCell::empty(),
             rx_index: Cell::new(0),
             rx_len: Cell::new(0),
@@ -217,6 +290,49 @@ impl UsbSerialJtag<'_> {
         usb_serial_jtag.disable_tx_interrupt();
 
         usb_serial_jtag
+    }
+
+    /// Set the alarm that times out a host that is gone or does not read.
+    ///
+    /// Without an alarm, the driver considers a host always connected and
+    /// waits on it indefinitely. A transmission that is already pending gets
+    /// its timeout from this call.
+    pub fn set_alarm(&'a self, alarm: &'a A) {
+        alarm.set_alarm_client(self);
+        self.alarm.set(alarm);
+        if self.tx_buffer.is_some() {
+            self.arm_tx_timeout();
+        }
+    }
+
+    /// Check if a host sent an SOF packet within the last
+    /// [`DISCONNECT_TIMEOUT_MS`].
+    ///
+    /// The raw SOF interrupt bit records whether an SOF packet arrived since
+    /// this function last cleared it. When this was less than
+    /// [`DISCONNECT_TIMEOUT_MS`] ago, a clear bit is no evidence of a lost
+    /// host, and the previous result stands.
+    fn host_connected(&self) -> bool {
+        self.alarm.map_or(true, |alarm| {
+            let now = alarm.now();
+            if self.registers.int_raw.is_set(INT::SOF) {
+                self.registers.int_clr.write(INT::SOF::SET);
+                self.sof_cleared_at.set(now);
+                self.host_connected.set(true);
+            } else if now.wrapping_sub(self.sof_cleared_at.get())
+                >= alarm.ticks_from_ms(DISCONNECT_TIMEOUT_MS)
+            {
+                self.host_connected.set(false);
+            }
+            self.host_connected.get()
+        })
+    }
+
+    /// Give the host [`TX_TIMEOUT_MS`] from now to pick up the flushed packet.
+    fn arm_tx_timeout(&self) {
+        self.alarm.map(|alarm| {
+            alarm.set_alarm(alarm.now(), alarm.ticks_from_ms(TX_TIMEOUT_MS));
+        });
     }
 
     fn enable_tx_interrupt(&self) {
@@ -237,29 +353,6 @@ impl UsbSerialJtag<'_> {
             .modify(INT::SERIAL_OUT_RECV_PKT::CLEAR);
     }
 
-    /// Write as much of one `USB_SERIAL_JTAG_PACKET_SIZE`-sized chunk as the
-    /// hardware currently has room for, then flush it. Returns the number
-    /// of bytes actually written.
-    fn write_chunk(regs: &UsbSerialJtagRegisters, bytes: &[u8]) -> usize {
-        let mut written = 0;
-
-        for &b in bytes.iter().take(USB_SERIAL_JTAG_PACKET_SIZE) {
-            if !regs.ep1_conf.is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE) {
-                break;
-            }
-            regs.ep1.write(EP1::RDWR_BYTE.val(b as u32));
-            written += 1;
-        }
-
-        // Flush unconditionally, even if `written == 0`. A flush with an
-        // empty buffer sends a zero-length packet, which is how a
-        // full-size packet's transfer gets terminated (see the module
-        // documentation).
-        regs.ep1_conf.modify(EP1_CONF::WR_DONE::SET);
-
-        written
-    }
-
     /// Advance an in-progress `transmit_buffer` as far as the hardware will
     /// currently allow, completing (and issuing the client callback) once
     /// everything, including any required terminating zero-length packet,
@@ -278,7 +371,8 @@ impl UsbSerialJtag<'_> {
 
         if idx < len {
             self.tx_buffer.map(|tx_buf| {
-                let written = Self::write_chunk(&regs, &tx_buf[idx..len]);
+                let written = write_chunk(&regs, &tx_buf[idx..len]);
+                self.arm_tx_timeout();
                 self.tx_index.set(idx + written);
 
                 // If we wrote a full buffer we may need to send an empty
@@ -288,9 +382,11 @@ impl UsbSerialJtag<'_> {
                     .set(written == USB_SERIAL_JTAG_PACKET_SIZE);
             });
         } else if self.tx_needs_zero_length_packet.take() {
-            Self::write_chunk(&regs, &[]);
+            write_chunk(&regs, &[]);
+            self.arm_tx_timeout();
         } else {
             self.disable_tx_interrupt();
+            self.alarm.map(|alarm| alarm.disarm());
             self.tx_client.map(|client| {
                 self.tx_buffer.take().map(|tx_buf| {
                     client.transmitted_buffer(tx_buf, len, Ok(()));
@@ -345,27 +441,42 @@ impl UsbSerialJtag<'_> {
             self.rx_progress();
         }
     }
+}
 
-    /// Synchronously write `bytes` out the CDC-ACM serial port, including any
-    /// terminating zero-length packet required. This is intended for panic
-    /// output, where interrupts are unavailable.
-    fn transmit_sync(regs: &UsbSerialJtagRegisters, bytes: &[u8]) {
-        let mut idx = 0;
-
-        while idx < bytes.len() {
-            let end = min(idx + USB_SERIAL_JTAG_PACKET_SIZE, bytes.len());
-            while !regs.ep1_conf.is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE) {}
-            idx += Self::write_chunk(regs, &bytes[idx..end]);
+impl<'a, A: Alarm<'a>> AlarmClient for UsbSerialJtag<'a, A> {
+    fn alarm(&self) {
+        if self.tx_buffer.is_none() {
+            return;
         }
 
-        if !bytes.is_empty() && bytes.len().is_multiple_of(USB_SERIAL_JTAG_PACKET_SIZE) {
-            while !regs.ep1_conf.is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE) {}
-            Self::write_chunk(regs, &[]);
+        if self
+            .registers
+            .ep1_conf
+            .is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE)
+        {
+            // The host picked up the packet, and the interrupt for it is
+            // pending.
+            self.tx_progress();
+            return;
         }
+
+        // The host did not pick up the packet in time. Until it does,
+        // `transmit_buffer` fails fast. We also check for SOF packets, such
+        // that a lost host makes `transmit_buffer` fail even once it picks up
+        // the packet.
+        self.host_connected();
+        self.tx_stalled.set(true);
+        self.disable_tx_interrupt();
+        let written = self.tx_index.get();
+        self.tx_client.map(|client| {
+            self.tx_buffer.take().map(|tx_buf| {
+                client.transmitted_buffer(tx_buf, written, Err(ErrorCode::FAIL));
+            });
+        });
     }
 }
 
-impl DeferredCallClient for UsbSerialJtag<'_> {
+impl<'a, A: Alarm<'a>> DeferredCallClient for UsbSerialJtag<'a, A> {
     fn register(&'static self) {
         self.deferred_call.register(self);
     }
@@ -375,14 +486,14 @@ impl DeferredCallClient for UsbSerialJtag<'_> {
     }
 }
 
-impl hil::uart::Configure for UsbSerialJtag<'_> {
+impl<'a, A: Alarm<'a>> hil::uart::Configure for UsbSerialJtag<'a, A> {
     fn configure(&self, _params: hil::uart::Parameters) -> Result<(), ErrorCode> {
         // Because this is USB CDC-ACM there is nothing to configure.
         Ok(())
     }
 }
 
-impl<'a> hil::uart::Transmit<'a> for UsbSerialJtag<'a> {
+impl<'a, A: Alarm<'a>> hil::uart::Transmit<'a> for UsbSerialJtag<'a, A> {
     fn set_transmit_client(&self, client: &'a dyn hil::uart::TransmitClient) {
         self.tx_client.set(client);
     }
@@ -396,12 +507,23 @@ impl<'a> hil::uart::Transmit<'a> for UsbSerialJtag<'a> {
             Err((ErrorCode::SIZE, tx_data))
         } else if self.tx_buffer.is_some() {
             Err((ErrorCode::BUSY, tx_data))
+        } else if !self.host_connected() {
+            Err((ErrorCode::OFF, tx_data))
+        } else if self.tx_stalled.get()
+            && !self
+                .registers
+                .ep1_conf
+                .is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE)
+        {
+            Err((ErrorCode::OFF, tx_data))
         } else {
+            self.tx_stalled.set(false);
             self.tx_buffer.replace(tx_data);
             self.tx_len.set(tx_len);
             self.tx_index.set(0);
             self.tx_needs_zero_length_packet.set(false);
 
+            self.arm_tx_timeout();
             self.enable_tx_interrupt();
 
             self.tx_progress();
@@ -418,7 +540,7 @@ impl<'a> hil::uart::Transmit<'a> for UsbSerialJtag<'a> {
     }
 }
 
-impl<'a> hil::uart::Receive<'a> for UsbSerialJtag<'a> {
+impl<'a, A: Alarm<'a>> hil::uart::Receive<'a> for UsbSerialJtag<'a, A> {
     fn set_receive_client(&self, client: &'a dyn hil::uart::ReceiveClient) {
         self.rx_client.set(client);
     }
@@ -483,11 +605,65 @@ use kernel::utilities::io_write::IoWrite;
 /// accessible.
 struct UsbSerialJtagPanicWriter {
     registers: StaticRef<UsbSerialJtagRegisters>,
+    // Set once the host did not pick up a packet in time.
+    stalled: bool,
+}
+
+impl UsbSerialJtagPanicWriter {
+    /// Wait until the host picked up the last flushed packet.
+    ///
+    /// Return `false` if the host did not pick it up within
+    /// [`PANIC_TX_TIMEOUT_POLLS`]. Once this happens, the writer only checks
+    /// for room and no longer waits.
+    fn wait_writable(&mut self) -> bool {
+        let polls = if self.stalled {
+            1
+        } else {
+            PANIC_TX_TIMEOUT_POLLS
+        };
+        for _ in 0..polls {
+            if self
+                .registers
+                .ep1_conf
+                .is_set(EP1_CONF::SERIAL_IN_EP_DATA_FREE)
+            {
+                self.stalled = false;
+                return true;
+            }
+            rv32i::support::nop();
+        }
+        self.stalled = true;
+        false
+    }
+
+    /// Synchronously write `bytes` out the CDC-ACM serial port, including any
+    /// terminating zero-length packet required.
+    ///
+    /// When the host does not pick up a packet in time, this function drops
+    /// the remaining bytes.
+    fn transmit_sync(&mut self, bytes: &[u8]) {
+        let mut idx = 0;
+
+        while idx < bytes.len() {
+            let end = min(idx + USB_SERIAL_JTAG_PACKET_SIZE, bytes.len());
+            if !self.wait_writable() {
+                return;
+            }
+            idx += write_chunk(&self.registers, &bytes[idx..end]);
+        }
+
+        if !bytes.is_empty()
+            && bytes.len().is_multiple_of(USB_SERIAL_JTAG_PACKET_SIZE)
+            && self.wait_writable()
+        {
+            write_chunk(&self.registers, &[]);
+        }
+    }
 }
 
 impl IoWrite for UsbSerialJtagPanicWriter {
     fn write(&mut self, buf: &[u8]) -> usize {
-        UsbSerialJtag::transmit_sync(&self.registers, buf);
+        self.transmit_sync(buf);
         buf.len()
     }
 }
@@ -504,7 +680,7 @@ pub struct UsbSerialJtagPanicWriterConfig {
     pub registers: StaticRef<UsbSerialJtagRegisters>,
 }
 
-impl kernel::platform::chip::PanicWriter for UsbSerialJtag<'_> {
+impl<'a, A: Alarm<'a>> kernel::platform::chip::PanicWriter for UsbSerialJtag<'a, A> {
     type Config = UsbSerialJtagPanicWriterConfig;
 
     fn create_panic_writer(
@@ -513,6 +689,7 @@ impl kernel::platform::chip::PanicWriter for UsbSerialJtag<'_> {
     ) -> impl IoWrite + core::fmt::Write {
         UsbSerialJtagPanicWriter {
             registers: config.registers,
+            stalled: false,
         }
     }
 }

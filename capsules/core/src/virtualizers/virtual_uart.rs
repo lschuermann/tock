@@ -248,6 +248,9 @@ impl<'a> MuxUart<'a> {
                                     node.transmitting.set(false);
                                     client.transmitted_buffer(buf, 0, Err(ecode));
                                 });
+                                // No transmission is in flight that would
+                                // start the next operation once it completes.
+                                self.do_next_op_async();
                             }
                         },
                         Operation::TransmitWord { word } => {
@@ -257,6 +260,7 @@ impl<'a> MuxUart<'a> {
                                     node.transmitting.set(false);
                                     client.transmitted_word(rcode);
                                 });
+                                self.do_next_op_async();
                             }
                         }
                     });

@@ -766,6 +766,7 @@ impl BleOmniglot {
             return false;
         }
         if self.state.get() != State::Stopped {
+            instrumentation::interrupt(irq);
             self.isr(irq);
         }
         true

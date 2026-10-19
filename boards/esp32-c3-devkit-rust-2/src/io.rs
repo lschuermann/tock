@@ -16,7 +16,7 @@ pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
     );
     let led = &mut LedHigh::new(&led_pin);
 
-    debug::panic::<_, esp32_c3::usb_serial_jtag::UsbSerialJtag, _, _>(
+    debug::panic::<_, esp32_c3::usb_serial_jtag::UsbSerialJtag<crate::UsbSerialJtagAlarm>, _, _>(
         &mut [led],
         esp32_c3::usb_serial_jtag::UsbSerialJtagPanicWriterConfig {
             registers: esp32_c3::chip::USB_SERIAL_JTAG_BASE,

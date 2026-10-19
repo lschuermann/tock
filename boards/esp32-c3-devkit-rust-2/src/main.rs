@@ -38,7 +38,7 @@ const NUM_PROCS: usize = 4;
 /// Services the BT interrupts in Tock's deferred interrupt path, ahead of the
 /// stock peripherals.
 struct BtInterruptService {
-    base: &'static Esp32C3DefaultPeripherals<'static>,
+    base: &'static Peripherals,
     bt: OptionalCell<&'static BleOmniglot>,
 }
 
@@ -51,6 +51,9 @@ impl InterruptService for BtInterruptService {
 
 type ChipHw = esp32_c3::chip::Esp32C3<'static, BtInterruptService>;
 type AlarmHw = esp32_c3::timg::TimG<'static>;
+/// Alarm that times out transmissions on the USB_SERIAL_JTAG serial port.
+type UsbSerialJtagAlarm = VirtualMuxAlarm<'static, AlarmHw>;
+type Peripherals = Esp32C3DefaultPeripherals<'static, UsbSerialJtagAlarm>;
 type SchedulerTimerHw =
     components::virtual_scheduler_timer::VirtualSchedulerTimerNoMuxComponentType<AlarmHw>;
 type ProcessPrinterInUse = capsules_system::process_printer::ProcessPrinterText;
@@ -192,7 +195,7 @@ unsafe fn setup() -> (
     &'static kernel::Kernel,
     &'static Esp32C3Board,
     &'static ChipHw,
-    &'static Esp32C3DefaultPeripherals<'static>,
+    &'static Peripherals,
 ) {
     use esp32_c3::sysreg::{CpuFrequency, PllFrequency};
 
@@ -225,7 +228,7 @@ unsafe fn setup() -> (
     //
     // PERIPHERALS
     //
-    let peripherals = static_init!(Esp32C3DefaultPeripherals, Esp32C3DefaultPeripherals::new());
+    let peripherals = static_init!(Peripherals, Peripherals::new());
 
     peripherals.timg0.disable_wdt();
     peripherals.rtc_cntl.disable_wdt();
@@ -377,6 +380,11 @@ unsafe fn setup() -> (
         )
     );
     hil::time::Alarm::set_alarm_client(virtual_alarm_user, alarm);
+
+    // Time out console transmissions when no host reads them.
+    let usb_serial_jtag_alarm = static_init!(UsbSerialJtagAlarm, VirtualMuxAlarm::new(mux_alarm));
+    usb_serial_jtag_alarm.setup();
+    peripherals.usb_serial_jtag.set_alarm(usb_serial_jtag_alarm);
 
     //
     // SENSORS

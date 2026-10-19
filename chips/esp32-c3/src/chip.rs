@@ -6,6 +6,7 @@
 
 use core::fmt::Write;
 
+use kernel::hil::time::Alarm;
 use kernel::platform::chip::{Chip, InterruptService};
 use kernel::utilities::StaticRef;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -70,9 +71,13 @@ pub struct Esp32C3<'a, I: InterruptService + 'a> {
     pic_interrupt_service: &'a I,
 }
 
-pub struct Esp32C3DefaultPeripherals<'a> {
+/// Peripherals of the ESP32-C3.
+///
+/// `A` is the type of the alarm that the board provides to `usb_serial_jtag`
+/// (see [`usb_serial_jtag::UsbSerialJtag::set_alarm`]).
+pub struct Esp32C3DefaultPeripherals<'a, A: Alarm<'a>> {
     pub uart0: esp32::uart::Uart<'a>,
-    pub usb_serial_jtag: usb_serial_jtag::UsbSerialJtag<'a>,
+    pub usb_serial_jtag: usb_serial_jtag::UsbSerialJtag<'a, A>,
     pub timg0: timg::TimG<'a>,
     pub timg1: timg::TimG<'a>,
     pub gpio: esp32::gpio::Port<'a>,
@@ -82,7 +87,7 @@ pub struct Esp32C3DefaultPeripherals<'a> {
     pub i2c: i2c::I2c<'a>,
 }
 
-impl Esp32C3DefaultPeripherals<'_> {
+impl<'a, A: Alarm<'a>> Esp32C3DefaultPeripherals<'a, A> {
     pub fn new() -> Self {
         Self {
             uart0: esp32::uart::Uart::new(esp32::uart::UART0_BASE),
@@ -103,7 +108,7 @@ impl Esp32C3DefaultPeripherals<'_> {
     }
 }
 
-impl InterruptService for Esp32C3DefaultPeripherals<'_> {
+impl<'a, A: Alarm<'a>> InterruptService for Esp32C3DefaultPeripherals<'a, A> {
     fn service_interrupt(&self, interrupt: u32) -> bool {
         match interrupt {
             interrupts::IRQ_UART0 => self.uart0.handle_interrupt(),
