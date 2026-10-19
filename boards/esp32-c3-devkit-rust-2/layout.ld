@@ -49,10 +49,10 @@ MEMORY
   rom  (rx)  : ORIGIN = 0x42000000, LENGTH = 0x00100000
   prog (rx)  : ORIGIN = 0x42100000, LENGTH = 0x00300000
   ram  (rw)  : ORIGIN = 0x3FC88000, LENGTH = 0x00048000
-  iram (rx)  : ORIGIN = 0x403DEF00, LENGTH = 0x00000100
+  iram (rx)  : ORIGIN = 0x403DEEB0, LENGTH = 0x00000150
 
   ble_iram (rx) : ORIGIN = 0x40380000, LENGTH = 0x8000
-  ble_ram  (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEF00
+  ble_ram  (rw) : ORIGIN = 0x3FCD0000, LENGTH = 0xEEB0
 }
 
 /* Inside `rom`; nothing of the kernel link is placed there. */
@@ -74,6 +74,12 @@ SECTIONS
     KEEP(*(.esp_direct_boot.entry))
   } > rom
 }
+
+/* Align `.storage` (`kernel::storage_volume!`) to the 4 KiB sectors of the SPI
+ * flash, the unit in which the flash erases. The board erases and writes its
+ * storage volumes at run time, so no sector may also hold kernel code or
+ * data. */
+PAGE_SIZE = 4096;
 
 /* We override Tock's default entry point (`initialize_ram_jump_to_main`) here,
  * as we need to first bootstrap the IRAM section. `esp32_c3_direct_boot_entry`

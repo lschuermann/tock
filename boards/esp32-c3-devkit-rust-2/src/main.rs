@@ -86,6 +86,27 @@ type TemperatureDriver = components::temperature::TemperatureComponentType<Shtc3
 type HumidityDriver = components::humidity::HumidityComponentType<Shtc3Hw>;
 type NineDofDriver = components::ninedof::NineDofComponentType;
 
+// TicKV
+type FlashHw = esp32_c3::flash::SpiFlash;
+const TICKV_PAGE_SIZE: usize = esp32_c3::flash::PAGE_SIZE;
+type Siphasher24 = components::siphash::Siphasher24ComponentType;
+type TicKVDedicatedFlash =
+    components::tickv::TicKVDedicatedFlashComponentType<FlashHw, Siphasher24, TICKV_PAGE_SIZE>;
+type TicKVKVStore = components::kv::TicKVKVStoreComponentType<
+    TicKVDedicatedFlash,
+    capsules_extra::tickv::TicKVKeyType,
+>;
+type KVStorePermissions = components::kv::KVStorePermissionsComponentType<TicKVKVStore>;
+type VirtualKVPermissions = components::kv::VirtualKVPermissionsComponentType<KVStorePermissions>;
+type KVDriver = components::kv::KVDriverComponentType<VirtualKVPermissions>;
+
+/// Size of the SPI flash of the ESP32-C3-MINI-1 module.
+const FLASH_SIZE: usize = 4 * 1024 * 1024;
+
+// Flash for TicKV, in the kernel's `.storage` section. layout.ld aligns the
+// section to flash sectors. Writing the kernel to the board resets it.
+kernel::storage_volume!(TICKV_STORAGE, 64);
+
 struct ProcessManagementCapabilityObj {}
 unsafe impl capabilities::ProcessManagementCapability for ProcessManagementCapabilityObj {}
 
@@ -107,6 +128,7 @@ struct Esp32C3Board {
     humidity: &'static HumidityDriver,
     ninedof: &'static NineDofDriver,
     hci: Option<&'static HciDriver>,
+    kv_driver: &'static KVDriver,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -125,6 +147,7 @@ impl SyscallDriverLookup for Esp32C3Board {
             capsules_extra::temperature::DRIVER_NUM => f(Some(self.temperature)),
             capsules_extra::humidity::DRIVER_NUM => f(Some(self.humidity)),
             capsules_extra::ninedof::DRIVER_NUM => f(Some(self.ninedof)),
+            capsules_extra::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
             capsules_extra::bluetooth_hci::DRIVER_NUM => {
                 f(self.hci.map(|h| h as &dyn kernel::syscall::SyscallDriver))
             }
@@ -491,6 +514,83 @@ unsafe fn setup() -> (
     .finalize(components::rng_component_static!(esp32_c3::rng::Rng));
 
     //
+    // TICKV
+    //
+
+    // ### Safety
+    //
+    // This board uses an ESP32-C3 whose mask ROM provides the ROM functions
+    // and flash state that the driver uses, and maps the module's 4 MiB SPI
+    // flash linearly at 0x42000000. The driver's `.iram` functions are in SRAM
+    // and intact (see `configure` above), and the kernel runs in machine mode.
+    // TicKV, the driver's only user, only writes and erases `TICKV_STORAGE`,
+    // whose sectors hold nothing else (layout.ld sets `PAGE_SIZE` to the
+    // sector size).
+    let flash = static_init!(FlashHw, unsafe {
+        esp32_c3::flash::SpiFlash::new(FLASH_SIZE)
+    });
+    flash.register();
+
+    // Static buffer to use when reading/writing flash for TicKV.
+    let page_buffer = static_init!(
+        <FlashHw as hil::flash::Flash>::Page,
+        <FlashHw as hil::flash::Flash>::Page::default()
+    );
+
+    // SipHash for creating TicKV hashed keys.
+    let sip_hash = components::siphash::Siphasher24Component::new()
+        .finalize(components::siphasher24_component_static!());
+
+    // TicKV with Tock wrapper/interface, on the pages of `TICKV_STORAGE`.
+    let tickv_storage: *const [u8] = core::ptr::addr_of!(TICKV_STORAGE);
+    let tickv = components::tickv::TicKVDedicatedFlashComponent::new(
+        sip_hash,
+        flash,
+        (tickv_storage.addr() - esp32_c3::flash::XIP_BASE) / TICKV_PAGE_SIZE,
+        tickv_storage.len(),
+        page_buffer,
+    )
+    .finalize(components::tickv_dedicated_flash_component_static!(
+        FlashHw,
+        Siphasher24,
+        TICKV_PAGE_SIZE,
+    ));
+
+    // KVSystem interface to KV (built on TicKV).
+    let tickv_kv_store = components::kv::TicKVKVStoreComponent::new(tickv).finalize(
+        components::tickv_kv_store_component_static!(
+            TicKVDedicatedFlash,
+            capsules_extra::tickv::TicKVKeyType,
+        ),
+    );
+
+    let kv_store_permissions = components::kv::KVStorePermissionsComponent::new(tickv_kv_store)
+        .finalize(components::kv_store_permissions_component_static!(
+            TicKVKVStore
+        ));
+
+    // Share the KV stack with a mux.
+    let mux_kv = components::kv::KVPermissionsMuxComponent::new(kv_store_permissions).finalize(
+        components::kv_permissions_mux_component_static!(KVStorePermissions),
+    );
+
+    // Create a virtual component for the userspace driver.
+    let virtual_kv_driver = components::kv::VirtualKVPermissionsComponent::new(mux_kv).finalize(
+        components::virtual_kv_permissions_component_static!(KVStorePermissions),
+    );
+
+    // Userspace driver for KV.
+    let kv_driver = components::kv::KVDriverComponent::new(
+        virtual_kv_driver,
+        board_kernel,
+        capsules_extra::kv_driver::DRIVER_NUM,
+        create_capability!(capabilities::MemoryAllocationCapability),
+    )
+    .finalize(components::kv_driver_component_static!(
+        VirtualKVPermissions
+    ));
+
+    //
     // CHIP AND INTERRUPTS
     //
 
@@ -620,6 +720,7 @@ unsafe fn setup() -> (
             humidity,
             ninedof,
             hci,
+            kv_driver,
         }
     );
 
@@ -637,18 +738,49 @@ unsafe fn setup() -> (
         )
     };
 
-    kernel::process::load_processes(
+    //
+    // PROCESS LOADING
+    //
+
+    // Load all processes, also unsigned ones. Each process gets a fixed
+    // ShortId from a hash of its name, and with it access to its own keys in
+    // the KV store.
+    let checking_policy = components::appid::checker_null::AppCheckerNullComponent::new()
+        .finalize(components::app_checker_null_component_static!());
+    let assigner = components::appid::assigner_name::AppIdAssignerNamesComponent::new()
+        .finalize(components::appid_assigner_names_component_static!());
+    let checker = components::appid::checker::ProcessCheckerMachineComponent::new(checking_policy)
+        .finalize(components::process_checker_machine_component_static!());
+
+    kernel::create_typed_capability!(app_store_cap, AppStoreCap: kernel::capabilities::ApplicationStorageCapability);
+    let storage_permissions_policy =
+        components::storage_permissions::individual::StoragePermissionsIndividualComponent::new(
+            app_store_cap,
+        )
+        .finalize(
+            components::storage_permissions_individual_component_static!(
+                ChipHw,
+                kernel::process::ProcessStandardDebugFull,
+                AppStoreCap,
+            ),
+        );
+
+    let _loader = components::loader::sequential::ProcessLoaderSequentialComponent::new(
+        checker,
         board_kernel,
         chip,
+        &FAULT_RESPONSE,
+        assigner,
+        storage_permissions_policy,
         app_flash,
         app_ram,
-        &FAULT_RESPONSE,
-        &process_mgmt_cap,
+        process_mgmt_cap,
     )
-    .unwrap_or_else(|err| {
-        debug!("Error loading processes!");
-        debug!("{:?}", err);
-    });
+    .finalize(components::process_loader_sequential_component_static!(
+        ChipHw,
+        kernel::process::ProcessStandardDebugFull,
+        NUM_PROCS
+    ));
 
     peripherals.init();
 
