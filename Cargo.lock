@@ -1452,6 +1452,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qemu_rv64_virt-linux"
+version = "0.2.4-dev"
+dependencies = [
+ "capsules-core",
+ "capsules-system",
+ "components",
+ "kernel",
+ "qemu_rv64_virt",
+ "qemu_rv64_virt_chip",
+ "rv64i",
+ "tock_build_scripts",
+]
+
+[[package]]
 name = "qemu_rv64_virt-test-ci"
 version = "0.2.4-dev"
 dependencies = [

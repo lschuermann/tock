@@ -1,0 +1,11 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2026.
+#
+# gen_init_cpio file list for the guest's built-in initramfs. @INIT@ is
+# substituted by build-linux.sh.
+
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+dir /proc 0755 0 0
+file /init @INIT@ 0755 0 0

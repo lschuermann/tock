@@ -61,6 +61,12 @@ kernel::define_capability_type!(ProcessConsoleCap:
 /// A structure representing this platform that holds references to all
 /// capsules for this platform. We've included an alarm and console.
 pub struct QemuRv64VirtPlatform {
+    /// Shared resources, for board configurations building on this platform.
+    pub uart_mux: &'static capsules_core::virtualizers::virtual_uart::MuxUart<'static>,
+    pub mux_alarm:
+        &'static MuxAlarm<'static, qemu_rv64_virt_chip::chip::QemuRv64VirtClint<'static>>,
+    pub processes: &'static kernel::process::ProcessArray<NUM_PROCS>,
+
     pconsole: &'static capsules_core::process_console::ProcessConsole<
         'static,
         { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
@@ -764,6 +770,9 @@ pub unsafe fn start() -> (
             ));
 
     let platform = QemuRv64VirtPlatform {
+        uart_mux,
+        mux_alarm,
+        processes,
         pconsole,
         console,
         alarm,
