@@ -15,6 +15,7 @@ pub mod csr;
 pub mod dma_fence;
 pub mod pmp;
 pub mod pseudo_instructions;
+pub mod sbi;
 pub mod support;
 pub mod syscall;
 pub mod thread_id;

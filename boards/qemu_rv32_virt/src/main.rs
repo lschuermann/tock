@@ -11,13 +11,18 @@ use kernel::capabilities;
 use kernel::component::Component;
 use kernel::platform::KernelResources;
 use kernel::platform::SyscallDriverLookup;
-use kernel::{create_capability, debug};
+use kernel::{create_capability, debug, static_init};
 
 // How should the kernel respond when a process faults.
 const FAULT_RESPONSE: capsules_system::process_policies::PanicFaultPolicy =
     capsules_system::process_policies::PanicFaultPolicy {};
 
 type ScreenDriver = capsules_extra::screen::screen::Screen<'static>;
+type SbiProcess = rv32i::sbi::SbiProcess<
+    'static,
+    rv32i::sbi::mock::MockSbiGuest,
+    rv32i::sbi::mock::MockSbiHandler,
+>;
 
 struct Platform {
     base: qemu_rv32_virt_lib::QemuRv32VirtPlatform,
@@ -166,6 +171,30 @@ pub unsafe fn main() {
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
+
+    // Run a (mock) RISC-V SBI guest alongside the Tock processes. It is
+    // scheduled by the same kernel loop, but uses the SBI instead of Tock's
+    // system call ABI.
+    let external_process_cap = create_capability!(capabilities::ExternalProcessCapability);
+    let sbi_guest = static_init!(
+        rv32i::sbi::mock::MockSbiGuest,
+        rv32i::sbi::mock::MockSbiGuest
+    );
+    let sbi_handler = static_init!(
+        rv32i::sbi::mock::MockSbiHandler,
+        rv32i::sbi::mock::MockSbiHandler::new()
+    );
+    let _ = board_kernel
+        .add_external_process(
+            |processid| {
+                static_init!(
+                    SbiProcess,
+                    rv32i::sbi::SbiProcess::new(processid, sbi_guest, sbi_handler)
+                )
+            },
+            &external_process_cap,
+        )
+        .inspect_err(|()| debug!("Error adding SBI process: no free process slot"));
 
     debug!("Entering main loop.");
 
