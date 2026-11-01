@@ -50,9 +50,10 @@ pub unsafe fn main() {
     kernel::debug!("Entering main loop.");
 
     let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
-    board_kernel.kernel_loop::<
-        mps2_base::Platform,
-        mps2_base::ChipHw<qemu_arm_mps2_an385::CortexM3>,
-        { mps2_base::NUM_PROCS as u8 },
-    >(platform, chip, None, &main_loop_capability);
+    board_kernel
+        .kernel_loop::<mps2_base::Platform, mps2_base::ChipHw<qemu_arm_mps2_an385::CortexM3>>(
+            platform,
+            chip,
+            &main_loop_capability,
+        );
 }

@@ -20,7 +20,6 @@ fn run_kernel_op(loops: usize) {
         board.kernel_loop_operation(
             platform,
             PANIC_RESOURCES.get().and_then(|pr| pr.chip.get()).unwrap(),
-            None::<&kernel::ipc::IPC<{ NUM_PROCS as u8 }>>,
             true,
             &main_loop_cap,
         );

@@ -12,7 +12,6 @@ use core::str;
 
 use crate::capabilities;
 use crate::errorcode::ErrorCode;
-use crate::ipc;
 use crate::kernel::Kernel;
 use crate::platform::mpu::{self};
 use crate::processbuffer::{ReadOnlyProcessBuffer, ReadWriteProcessBuffer};
@@ -151,20 +150,6 @@ impl ProcessId {
             kernel,
             index,
             identifier,
-        }
-    }
-
-    /// Get the location of this app in the processes array.
-    ///
-    /// This will return `Some(index)` if the identifier stored in this
-    /// `ProcessId` matches the app saved at the known index. If the identifier
-    /// does not match then `None` will be returned.
-    pub(crate) fn index(&self) -> Option<usize> {
-        // Do a lookup to make sure that the index we have is correct.
-        if self.kernel.processid_is_valid(self) {
-            Some(self.index)
-        } else {
-            None
         }
     }
 
@@ -1056,8 +1041,6 @@ pub enum Task {
     /// process without invoking any callbacks in userspace (e.g., in response
     /// to a YieldFor).
     ReturnValue(ReturnArguments),
-    /// An IPC operation that needs additional setup to configure memory access.
-    IPC((ProcessId, ipc::IPCUpcallType)),
 }
 
 /// Enumeration to identify whether a function call for a process comes directly
