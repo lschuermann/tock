@@ -19,7 +19,8 @@ use core::cell::Cell;
 /// Represents a slot for a process in a [`ProcessArray`].
 ///
 /// A slot can be empty (`None`), or hold a reference to a
-/// [`Process`](process::Process).
+/// [`Schedulable`](process::Schedulable) process. This is typically a Tock
+/// [`Process`](process::Process), but may also be another type of process.
 ///
 /// The `ProcessSlot` type is useful for allowing slices of processes without
 /// knowing the fixed number of processes, or being templated on `NUM_PROCS`.
@@ -28,16 +29,16 @@ use core::cell::Cell;
 #[derive(Clone)]
 pub struct ProcessSlot {
     /// Optionally points to a process.
-    pub(crate) proc: Cell<Option<&'static dyn process::Process>>,
+    pub(crate) proc: Cell<Option<&'static dyn process::Schedulable>>,
 }
 
 impl ProcessSlot {
-    pub(crate) fn set(&self, process: &'static dyn process::Process) {
+    pub(crate) fn set(&self, process: &'static dyn process::Schedulable) {
         self.proc.set(Some(process));
     }
 
-    /// Install a [`Process`](process::Process) into this process slot from outside the
-    /// kernel crate.
+    /// Install a [`Schedulable`](process::Schedulable) process into this
+    /// process slot from outside the kernel crate.
     ///
     /// The normal `set()` method is `pub(crate)` because, in
     /// production, only the kernel's own process-loading machinery should be
@@ -54,16 +55,22 @@ impl ProcessSlot {
     /// process.
     pub fn set_external(
         &self,
-        process: &'static dyn process::Process,
+        process: &'static dyn process::Schedulable,
         _capability: &dyn capabilities::ExternalProcessCapability,
     ) {
         self.proc.set(Some(process));
     }
 
-    /// Return the underlying [`process::Process`] if the slot contains a
-    /// process.
-    pub fn get(&self) -> Option<&'static dyn process::Process> {
+    /// Return the underlying [`process::Schedulable`] if the slot contains a
+    /// process of any type.
+    pub fn get(&self) -> Option<&'static dyn process::Schedulable> {
         self.proc.get()
+    }
+
+    /// Return the underlying [`process::Process`] if the slot contains a Tock
+    /// process.
+    pub fn get_process(&self) -> Option<&'static dyn process::Process> {
+        self.proc.get().and_then(|p| p.as_process())
     }
 
     /// Check if the slot contains a process with a matching process ID.

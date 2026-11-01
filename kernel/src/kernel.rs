@@ -26,7 +26,7 @@ use crate::platform::platform::{ProcessFault, SyscallDriverLookup, SyscallFilter
 use crate::platform::scheduler_timer::SchedulerTimer;
 use crate::platform::watchdog::WatchDog;
 use crate::process::ProcessSlot;
-use crate::process::{self, ProcessId, Task};
+use crate::process::{self, ProcessId, StepResult, Task};
 use crate::scheduler::{Scheduler, SchedulingDecision};
 use crate::syscall::SyscallDriver;
 use crate::syscall::{ContextSwitchReason, SyscallReturn};
@@ -99,6 +99,13 @@ impl Kernel {
     /// Helper function that moves all non-generic portions of process_map_or
     /// into a non-generic function to reduce code bloat from monomorphization.
     pub(crate) fn get_process(&self, processid: ProcessId) -> Option<&dyn process::Process> {
+        self.get_schedulable(processid)
+            .and_then(|process| process.as_process())
+    }
+
+    /// Look up a process of any type (not only Tock processes) by its
+    /// [`ProcessId`].
+    fn get_schedulable(&self, processid: ProcessId) -> Option<&dyn process::Schedulable> {
         // We use the index in the [`ProcessId`] so we can do a direct lookup.
         // However, we are not guaranteed that the app still exists at that
         // index in the processes array. To avoid additional overhead, we do the
@@ -184,7 +191,7 @@ impl Kernel {
         core::slice::Iter<'_, ProcessSlot>,
         fn(&ProcessSlot) -> Option<&'static dyn process::Process>,
     > {
-        self.processes.iter().filter_map(ProcessSlot::get)
+        self.processes.iter().filter_map(ProcessSlot::get_process)
     }
 
     /// Run a closure on every valid process. This will iterate the array of
@@ -285,6 +292,31 @@ impl Kernel {
         Err(())
     }
 
+    /// Add a process that is not loaded by the kernel's own process loading
+    /// machinery, such as a process of a type other than
+    /// [`ProcessStandard`](crate::process_standard::ProcessStandard).
+    ///
+    /// This finds a free process slot and allocates a fresh [`ProcessId`] for
+    /// it. `create` is then called with this [`ProcessId`] and must return the
+    /// process to place into the slot.
+    ///
+    /// Returns the new process's [`ProcessId`], or `Err(())` if there are no
+    /// free process slots.
+    pub fn add_external_process<F>(
+        &'static self,
+        create: F,
+        capability: &dyn capabilities::ExternalProcessCapability,
+    ) -> Result<ProcessId, ()>
+    where
+        F: FnOnce(ProcessId) -> &'static dyn process::Schedulable,
+    {
+        let (index, slot) = self.next_available_process_slot()?;
+        let processid =
+            ProcessId::new_external(self, self.create_process_identifier(), index, capability);
+        slot.set_external(create(processid), capability);
+        Ok(processid)
+    }
+
     /// Terminate a process if it exists, and remove it from ProcessArray.
     /// `extract_app_handle` is the caller-passed operation which is used
     /// to determine the `app_handle` which is returned as a usize value.
@@ -297,7 +329,7 @@ impl Kernel {
         F: FnOnce(&'static dyn process::Process) -> usize,
     {
         for slot in self.processes.iter() {
-            if let Some(process) = slot.get() {
+            if let Some(process) = slot.get_process() {
                 if process.short_app_id() == shortid {
                     process.terminate(None);
                     let result = extract_app_handle(process);
@@ -366,11 +398,11 @@ impl Kernel {
                 // No kernel work ready, so ask scheduler for a process.
                 match scheduler.next() {
                     SchedulingDecision::RunProcess((processid, timeslice_us)) => {
-                        self.process_map_or((), processid, |process| {
+                        if let Some(process) = self.get_schedulable(processid) {
                             let (reason, time_executed) =
                                 self.do_process(resources, chip, process, timeslice_us);
                             scheduler.result(reason, time_executed);
-                        });
+                        }
                     }
                     SchedulingDecision::TrySleep => {
                         // For testing, it may be helpful to
@@ -419,17 +451,14 @@ impl Kernel {
         }
     }
 
-    /// Transfer control from the kernel to a userspace process.
+    /// Transfer control from the kernel to a process.
     ///
-    /// This function is called by the main kernel loop to run userspace code.
-    /// Notably, system calls from processes are handled in the kernel, *by the
-    /// kernel thread* in this function, and the syscall return value is set for
-    /// the process immediately. Normally, a process is allowed to continue
-    /// running after calling a syscall. However, the scheduler is given an out,
-    /// as `do_process()` will check with the scheduler before re-executing the
-    /// process to allow it to return from the syscall. If a process yields with
-    /// no upcalls pending, exits, exceeds its timeslice, or is interrupted,
-    /// then `do_process()` will return.
+    /// This function is called by the main kernel loop to run a process. It
+    /// repeatedly asks the process to [`step`](process::Schedulable::step)
+    /// until the process has no more work to do, the scheduler no longer
+    /// wishes to run it, or it exceeds its timeslice. How a process executes,
+    /// and how it handles traps such as system calls, is entirely up to the
+    /// process implementation. For Tock processes, see [`TockProcessExecutor`].
     ///
     /// Depending on the particular scheduler in use, this function may act in a
     /// few different ways. `scheduler.continue_process()` allows the scheduler
@@ -454,7 +483,7 @@ impl Kernel {
         &self,
         resources: &KR,
         chip: &C,
-        process: &dyn process::Process,
+        process: &dyn process::Schedulable,
         timeslice_us: Option<NonZeroU32>,
     ) -> (process::StoppedExecutingReason, Option<u32>) {
         // We must use a dummy scheduler timer if the process should be executed
@@ -466,6 +495,15 @@ impl Kernel {
             resources.scheduler_timer()
         };
 
+        // Board-provided resources that the process may need while executing.
+        let hooks = KernelHooks {
+            syscall_driver_lookup: resources.syscall_driver_lookup(),
+            syscall_filter: resources.syscall_filter(),
+            process_fault: resources.process_fault(),
+            context_switch_callback: resources.context_switch_callback(),
+            scheduler_timer,
+        };
+
         // Clear the scheduler timer and then start the counter. This starts the
         // process's timeslice. Since the kernel is still executing at this
         // point, the scheduler timer need not have an interrupt enabled after
@@ -475,17 +513,14 @@ impl Kernel {
             scheduler_timer.start(timeslice)
         }
 
-        // Need to track why the process is no longer executing so that we can
-        // inform the scheduler.
-        let mut return_reason = process::StoppedExecutingReason::NoWorkLeft;
-
         // Since the timeslice counts both the process's execution time and the
         // time spent in the kernel on behalf of the process (setting it up and
         // handling its syscalls), we intend to keep running the process until
         // it has no more work to do. We break out of this loop if the scheduler
         // no longer wants to execute this process or if it exceeds its
-        // timeslice.
-        loop {
+        // timeslice. The loop evaluates to the reason why the process is no
+        // longer executing, so that we can inform the scheduler.
+        let return_reason = loop {
             let stop_running = match scheduler_timer.get_remaining_us() {
                 Some(us) => us.get() <= MIN_QUANTA_THRESHOLD_US,
                 None => true,
@@ -493,8 +528,7 @@ impl Kernel {
             if stop_running {
                 // Process ran out of time while the kernel was executing.
                 process.debug_timeslice_expired();
-                return_reason = process::StoppedExecutingReason::TimesliceExpired;
-                break;
+                break process::StoppedExecutingReason::TimesliceExpired;
             }
 
             // Check if the scheduler wishes to continue running this process.
@@ -502,186 +536,32 @@ impl Kernel {
                 .scheduler()
                 .continue_process(process.processid(), chip);
             if !continue_process {
-                return_reason = process::StoppedExecutingReason::KernelPreemption;
-                break;
+                break process::StoppedExecutingReason::KernelPreemption;
             }
 
             // Check if this process is actually ready to run. If not, we don't
             // try to run it. This case can happen if a process faults and is
             // stopped, for example.
             if !process.ready() {
-                return_reason = process::StoppedExecutingReason::NoWorkLeft;
-                break;
+                break process::StoppedExecutingReason::NoWorkLeft;
             }
 
-            match process.get_state() {
-                process::State::Running => {
-                    // Running means that this process expects to be running, so
-                    // go ahead and set things up and switch to executing the
-                    // process. Arming the scheduler timer instructs it to
-                    // generate an interrupt when the timeslice has expired. The
-                    // underlying timer is not affected.
-                    resources
-                        .context_switch_callback()
-                        .context_switch_hook(process);
-
-                    // Configure the MPU for the process to run, and activate
-                    // it. With certain memory protection mechanisms such as
-                    // RISC-V ePMP, this will make all userspace-accessible
-                    // memory inaccessible to kernel mode. When switching back
-                    // to the kernel, we must first run `disable_app_mpu` before
-                    // attempting to access any userspace memory.
-                    process.setup_mpu();
-                    chip.mpu().enable_app_mpu();
-
-                    scheduler_timer.arm();
-                    // SAFETY: We just setup and enabled the MPU for the process,
-                    // ensuring it will be correctly configured when the process
-                    // executes.
-                    let context_switch_reason = unsafe { process.switch_to() };
-                    scheduler_timer.disarm();
-
-                    // Disable the application MPU. This is necessary on systems
-                    // like RISC-V ePMP, which makes userspace memory
-                    // inaccessible to kernel mode if memory protection is
-                    // active.
-                    //
-                    // SAFETY: This function is unsafe, as calling it before switching
-                    // to a process, without first re-enabling memory
-                    // protection, could allow an application to access
-                    // kernel-private memory. Invoking this function is safe
-                    // here, as we always call `enable_app_mpu` above before
-                    // switching back to a process.
-                    unsafe {
-                        chip.mpu().disable_app_mpu();
+            match process.step(&hooks) {
+                StepResult::Continue => {}
+                StepResult::Interrupted => {
+                    if scheduler_timer.get_remaining_us().is_none() {
+                        // This interrupt was a timeslice expiration.
+                        process.debug_timeslice_expired();
+                        break process::StoppedExecutingReason::TimesliceExpired;
                     }
-
-                    // Now the process has returned back to the kernel. Check
-                    // why and handle the process as appropriate.
-                    match context_switch_reason {
-                        Some(ContextSwitchReason::Fault) => {
-                            // The app faulted, check if the chip wants to
-                            // handle the fault.
-                            if resources
-                                .process_fault()
-                                .process_fault_hook(process)
-                                .is_err()
-                            {
-                                // Let process deal with it as appropriate.
-                                process.set_fault_state();
-                            }
-                        }
-                        Some(ContextSwitchReason::SyscallFired { syscall }) => {
-                            self.handle_syscall(resources, process, syscall);
-                        }
-                        Some(ContextSwitchReason::Interrupted) => {
-                            if scheduler_timer.get_remaining_us().is_none() {
-                                // This interrupt was a timeslice expiration.
-                                process.debug_timeslice_expired();
-                                return_reason = process::StoppedExecutingReason::TimesliceExpired;
-                                break;
-                            }
-                            // Go to the beginning of loop to determine whether
-                            // to break to handle the interrupt, continue
-                            // executing this process, or switch to another
-                            // process.
-                            continue;
-                        }
-                        None => {
-                            // Something went wrong when switching to this
-                            // process. Indicate this by putting it in a fault
-                            // state.
-                            process.set_fault_state();
-                        }
-                    }
+                    // Go to the beginning of loop to determine whether to break
+                    // to handle the interrupt, continue executing this process,
+                    // or switch to another process.
                 }
-                process::State::Yielded => {
-                    // If the process is yielded or hasn't been started it is
-                    // waiting for a upcall. If there is a task scheduled for
-                    // this process go ahead and set the process to execute it.
-                    match process.dequeue_task() {
-                        None => break,
-                        Some(cb) => match cb {
-                            Task::ReturnValue(_) => {
-                                // Per TRD104, Yield-Wait does not wake the
-                                // process for events that generate Null
-                                // Upcalls.
-                                break;
-                            }
-                            Task::FunctionCall(ccb) => {
-                                if config::CONFIG.trace_syscalls {
-                                    debug!(
-                                        "[{:?}] function_call @{:#x}({:#x}, {:#x}, {:#x}, {:#x})",
-                                        process.processid(),
-                                        ccb.pc,
-                                        ccb.argument0,
-                                        ccb.argument1,
-                                        ccb.argument2,
-                                        ccb.argument3,
-                                    );
-                                }
-                                process.set_process_function(ccb);
-                            }
-                        },
-                    }
-                }
-                process::State::YieldedFor(upcall_id) => {
-                    // If this process is waiting for a specific upcall, see if
-                    // it is ready. If so, dequeue it and return its values to
-                    // the process without scheduling the callback.
-                    match process.remove_upcall(upcall_id) {
-                        None => break,
-                        Some(task) => {
-                            let (a0, a1, a2) = match task {
-                                // There is no callback function registered, we
-                                // just return the values provided by the driver
-                                Task::ReturnValue(rv) => {
-                                    if config::CONFIG.trace_syscalls {
-                                        debug!(
-                                            "[{:?}] Yield-WaitFor: [NU] ({:#x}, {:#x}, {:#x})",
-                                            process.processid(),
-                                            rv.argument0,
-                                            rv.argument1,
-                                            rv.argument2,
-                                        );
-                                    }
-                                    (rv.argument0, rv.argument1, rv.argument2)
-                                }
-                                // There is a registered callback function, but
-                                // since the process used `Yield-WaitFor`, we do
-                                // not execute it, we just return its arguments
-                                // values to the application.
-                                Task::FunctionCall(ccb) => {
-                                    if config::CONFIG.trace_syscalls {
-                                        debug!(
-                                            "[{:?}] Yield-WaitFor [Suppressed function_call @{:#x}] ({:#x}, {:#x}, {:#x}, {:#x})",
-                                            process.processid(),
-                                            ccb.pc,
-                                            ccb.argument0,
-                                            ccb.argument1,
-                                            ccb.argument2,
-                                            ccb.argument3,
-                                        );
-                                    }
-                                    (ccb.argument0, ccb.argument1, ccb.argument2)
-                                }
-                            };
-                            process
-                                .set_syscall_return_value(SyscallReturn::YieldWaitFor(a0, a1, a2));
-                        }
-                    }
-                }
-                process::State::Faulted | process::State::Terminated => {
-                    // We should never be scheduling an unrunnable process.
-                    // This is a potential security flaw: panic.
-                    panic!("Attempted to schedule an unrunnable process");
-                }
-                process::State::Stopped(_) => {
-                    return_reason = process::StoppedExecutingReason::Stopped;
-                    break;
-                }
+                StepResult::NoWorkLeft => break process::StoppedExecutingReason::NoWorkLeft,
+                StepResult::Stopped => break process::StoppedExecutingReason::Stopped,
             }
-        }
+        };
 
         // Check how much time the process used while it was executing, and
         // return the value so we can provide it to the scheduler.
@@ -707,6 +587,227 @@ impl Kernel {
 
         (return_reason, time_executed_us)
     }
+}
+
+/// Board-provided resources that a process may need while it is executing.
+///
+/// The kernel loop constructs this from the board's [`KernelResources`] and
+/// passes it to [`Schedulable::step`](process::Schedulable::step). The kernel
+/// loop itself does not interpret any of these resources: it is up to each
+/// process type to use the ones relevant to it. For instance, Tock processes
+/// use the system call driver lookup and system call filter, whereas other
+/// types of processes may ignore them entirely.
+pub struct KernelHooks<'a> {
+    syscall_driver_lookup: &'a dyn DynSyscallDriverLookup,
+    syscall_filter: &'a dyn SyscallFilter,
+    process_fault: &'a dyn ProcessFault,
+    context_switch_callback: &'a dyn ContextSwitchCallback,
+    scheduler_timer: &'a dyn SchedulerTimer,
+}
+
+impl KernelHooks<'_> {
+    /// Arm the scheduler timer. Process implementations must call this right
+    /// before switching to the process, such that the timer generates an
+    /// interrupt once the process's timeslice expires.
+    pub fn arm_scheduler_timer(&self) {
+        self.scheduler_timer.arm();
+    }
+
+    /// Disarm the scheduler timer. Process implementations must call this
+    /// right after the process returned to the kernel.
+    pub fn disarm_scheduler_timer(&self) {
+        self.scheduler_timer.disarm();
+    }
+
+    /// Invoke `f` with the system call driver registered for `driver_num`.
+    fn with_driver<F: FnOnce(Option<&dyn SyscallDriver>)>(&self, driver_num: usize, f: F) {
+        let mut f = Some(f);
+        self.syscall_driver_lookup
+            .with_driver_dyn(driver_num, &mut |driver| {
+                if let Some(f) = f.take() {
+                    f(driver)
+                }
+            });
+    }
+}
+
+/// Object-safe version of [`SyscallDriverLookup`], to allow passing it to
+/// processes through [`KernelHooks`].
+trait DynSyscallDriverLookup {
+    fn with_driver_dyn(&self, driver_num: usize, f: &mut dyn FnMut(Option<&dyn SyscallDriver>));
+}
+
+impl<T: SyscallDriverLookup> DynSyscallDriverLookup for T {
+    fn with_driver_dyn(&self, driver_num: usize, f: &mut dyn FnMut(Option<&dyn SyscallDriver>)) {
+        self.with_driver(driver_num, f)
+    }
+}
+
+/// Execution of Tock processes, implementing Tock's system call ABI (TRD104).
+///
+/// This is used by Tock [`Process`](process::Process) implementations (e.g.,
+/// [`ProcessStandard`](crate::process_standard::ProcessStandard)) to implement
+/// [`Schedulable::step`](process::Schedulable::step). The core kernel loop is
+/// not aware of any of this.
+pub(crate) struct TockProcessExecutor;
+
+impl TockProcessExecutor {
+    /// Perform one step of executing a Tock process: if it is running, switch
+    /// to it and handle the reason it returned to the kernel (e.g., a system
+    /// call). If it is yielded, deliver a pending upcall, if any.
+    pub(crate) fn step<C: Chip, P: process::Process>(
+        chip: &C,
+        process: &P,
+        hooks: &KernelHooks,
+    ) -> StepResult {
+        match process.get_state() {
+            process::State::Running => {
+                // Running means that this process expects to be running, so go
+                // ahead and set things up and switch to executing the process.
+                // Arming the scheduler timer instructs it to generate an
+                // interrupt when the timeslice has expired. The underlying
+                // timer is not affected.
+                hooks.context_switch_callback.context_switch_hook(process);
+
+                // Configure the MPU for the process to run, and activate it.
+                // With certain memory protection mechanisms such as RISC-V
+                // ePMP, this will make all userspace-accessible memory
+                // inaccessible to kernel mode. When switching back to the
+                // kernel, we must first run `disable_app_mpu` before
+                // attempting to access any userspace memory.
+                process.setup_mpu();
+                chip.mpu().enable_app_mpu();
+
+                hooks.arm_scheduler_timer();
+                // SAFETY: We just setup and enabled the MPU for the process,
+                // ensuring it will be correctly configured when the process
+                // executes.
+                let context_switch_reason = unsafe { process.switch_to() };
+                hooks.disarm_scheduler_timer();
+
+                // Disable the application MPU. This is necessary on systems
+                // like RISC-V ePMP, which makes userspace memory inaccessible
+                // to kernel mode if memory protection is active.
+                //
+                // SAFETY: This function is unsafe, as calling it before
+                // switching to a process, without first re-enabling memory
+                // protection, could allow an application to access
+                // kernel-private memory. Invoking this function is safe here,
+                // as we always call `enable_app_mpu` above before switching
+                // back to a process.
+                unsafe {
+                    chip.mpu().disable_app_mpu();
+                }
+
+                // Now the process has returned back to the kernel. Check why
+                // and handle the process as appropriate.
+                match context_switch_reason {
+                    Some(ContextSwitchReason::Fault) => {
+                        // The app faulted, check if the chip wants to handle
+                        // the fault.
+                        if hooks.process_fault.process_fault_hook(process).is_err() {
+                            // Let process deal with it as appropriate.
+                            process.set_fault_state();
+                        }
+                    }
+                    Some(ContextSwitchReason::SyscallFired { syscall }) => {
+                        Self::handle_syscall(hooks, process, syscall);
+                    }
+                    Some(ContextSwitchReason::Interrupted) => {
+                        return StepResult::Interrupted;
+                    }
+                    None => {
+                        // Something went wrong when switching to this process.
+                        // Indicate this by putting it in a fault state.
+                        process.set_fault_state();
+                    }
+                }
+                StepResult::Continue
+            }
+            process::State::Yielded => {
+                // If the process is yielded or hasn't been started it is
+                // waiting for a upcall. If there is a task scheduled for this
+                // process go ahead and set the process to execute it.
+                match process.dequeue_task() {
+                    None => StepResult::NoWorkLeft,
+                    Some(cb) => match cb {
+                        Task::ReturnValue(_) => {
+                            // Per TRD104, Yield-Wait does not wake the process
+                            // for events that generate Null Upcalls.
+                            StepResult::NoWorkLeft
+                        }
+                        Task::FunctionCall(ccb) => {
+                            if config::CONFIG.trace_syscalls {
+                                debug!(
+                                    "[{:?}] function_call @{:#x}({:#x}, {:#x}, {:#x}, {:#x})",
+                                    process.processid(),
+                                    ccb.pc,
+                                    ccb.argument0,
+                                    ccb.argument1,
+                                    ccb.argument2,
+                                    ccb.argument3,
+                                );
+                            }
+                            process.set_process_function(ccb);
+                            StepResult::Continue
+                        }
+                    },
+                }
+            }
+            process::State::YieldedFor(upcall_id) => {
+                // If this process is waiting for a specific upcall, see if it
+                // is ready. If so, dequeue it and return its values to the
+                // process without scheduling the callback.
+                match process.remove_upcall(upcall_id) {
+                    None => StepResult::NoWorkLeft,
+                    Some(task) => {
+                        let (a0, a1, a2) = match task {
+                            // There is no callback function registered, we just
+                            // return the values provided by the driver
+                            Task::ReturnValue(rv) => {
+                                if config::CONFIG.trace_syscalls {
+                                    debug!(
+                                        "[{:?}] Yield-WaitFor: [NU] ({:#x}, {:#x}, {:#x})",
+                                        process.processid(),
+                                        rv.argument0,
+                                        rv.argument1,
+                                        rv.argument2,
+                                    );
+                                }
+                                (rv.argument0, rv.argument1, rv.argument2)
+                            }
+                            // There is a registered callback function, but
+                            // since the process used `Yield-WaitFor`, we do not
+                            // execute it, we just return its arguments values
+                            // to the application.
+                            Task::FunctionCall(ccb) => {
+                                if config::CONFIG.trace_syscalls {
+                                    debug!(
+                                        "[{:?}] Yield-WaitFor [Suppressed function_call @{:#x}] ({:#x}, {:#x}, {:#x}, {:#x})",
+                                        process.processid(),
+                                        ccb.pc,
+                                        ccb.argument0,
+                                        ccb.argument1,
+                                        ccb.argument2,
+                                        ccb.argument3,
+                                    );
+                                }
+                                (ccb.argument0, ccb.argument1, ccb.argument2)
+                            }
+                        };
+                        process.set_syscall_return_value(SyscallReturn::YieldWaitFor(a0, a1, a2));
+                        StepResult::Continue
+                    }
+                }
+            }
+            process::State::Faulted | process::State::Terminated => {
+                // We should never be scheduling an unrunnable process. This is
+                // a potential security flaw: panic.
+                panic!("Attempted to schedule an unrunnable process");
+            }
+            process::State::Stopped(_) => StepResult::Stopped,
+        }
+    }
 
     /// Method to invoke a system call on a particular process. Applies the
     /// kernel system call filtering policy (if any). Handles `Yield` and
@@ -714,12 +815,7 @@ impl Kernel {
     /// driver system calls to peripheral driver capsules through the platforms
     /// `with_driver` method.
     #[inline]
-    fn handle_syscall<KR: KernelResources<C>, C: Chip>(
-        &self,
-        resources: &KR,
-        process: &dyn process::Process,
-        syscall: Syscall,
-    ) {
+    fn handle_syscall<P: process::Process>(hooks: &KernelHooks, process: &P, syscall: Syscall) {
         // Hook for process debugging.
         process.debug_syscall_called(syscall);
 
@@ -746,8 +842,7 @@ impl Kernel {
             } => {} // Memop is not filterable.
             _ => {
                 // Check all other syscalls for filtering.
-                if let Err(response) = resources.syscall_filter().filter_syscall(process, &syscall)
-                {
+                if let Err(response) = hooks.syscall_filter.filter_syscall(process, &syscall) {
                     process.set_syscall_return_value(SyscallReturn::Failure(response));
 
                     if config::CONFIG.trace_syscalls {
@@ -827,9 +922,7 @@ impl Kernel {
             | Syscall::ReadWriteAllow { driver_number, .. }
             | Syscall::UserspaceReadableAllow { driver_number, .. }
             | Syscall::ReadOnlyAllow { driver_number, .. } => {
-                resources
-                .syscall_driver_lookup()
-                .with_driver(driver_number, |driver| match syscall {
+                hooks.with_driver(driver_number, |driver| match syscall {
                     Syscall::Subscribe {
                         driver_number,
                         subdriver_number,

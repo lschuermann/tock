@@ -412,7 +412,7 @@ pub unsafe fn panic_process_info<PP: ProcessPrinter, W: Write>(
     // print data about each process
     let _ = writer.write_fmt(format_args!("\r\n---| App Status |---\r\n"));
     for slot in processes {
-        slot.proc.get().map(|process| {
+        slot.get_process().map(|process| {
             // Print the memory map and basic process info.
             //
             // Because we are using a synchronous printer we do not need to

@@ -21,7 +21,7 @@ use crate::config;
 use crate::debug;
 use crate::errorcode::ErrorCode;
 use crate::init_uninit_struct;
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, KernelHooks, TockProcessExecutor};
 use crate::platform::chip::Chip;
 use crate::platform::mpu::{self, MPU};
 use crate::process::ProcessBinary;
@@ -29,6 +29,7 @@ use crate::process::{BinaryVersion, ReturnArguments};
 use crate::process::{Error, FunctionCall, FunctionCallSource, Process, Task};
 use crate::process::{FaultAction, ProcessCustomGrantIdentifier, ProcessId};
 use crate::process::{ProcessAddresses, ProcessSizes, ShortId};
+use crate::process::{Schedulable, StepResult};
 use crate::process::{State, StoppedState};
 use crate::process_checker::AcceptedCredential;
 use crate::process_loading::ProcessLoadError;
@@ -574,11 +575,34 @@ pub struct ProcessStandard<'a, C: 'static + Chip, D: 'static + ProcessStandardDe
     debug: D,
 }
 
-impl<C: Chip, D: 'static + ProcessStandardDebug> Process for ProcessStandard<'_, C, D> {
+impl<C: Chip, D: 'static + ProcessStandardDebug> Schedulable for ProcessStandard<'_, C, D> {
     fn processid(&self) -> ProcessId {
         self.process_id.get()
     }
 
+    fn ready(&self) -> bool {
+        match self.state.get() {
+            State::Running => true,
+            State::YieldedFor(_) => self.is_yield_wait_for_ready.get(),
+            State::Yielded => self.tasks.map_or(false, |ring_buf| ring_buf.has_elements()),
+            _ => false,
+        }
+    }
+
+    fn step(&self, hooks: &KernelHooks) -> StepResult {
+        TockProcessExecutor::step(self.chip, self, hooks)
+    }
+
+    fn debug_timeslice_expired(&self) {
+        self.debug.increment_timeslice_expiration_count();
+    }
+
+    fn as_process(&self) -> Option<&dyn Process> {
+        Some(self)
+    }
+}
+
+impl<C: Chip, D: 'static + ProcessStandardDebug> Process for ProcessStandard<'_, C, D> {
     fn short_app_id(&self) -> ShortId {
         self.app_id
     }
@@ -644,15 +668,6 @@ impl<C: Chip, D: 'static + ProcessStandardDebug> Process for ProcessStandard<'_,
         }
 
         ret
-    }
-
-    fn ready(&self) -> bool {
-        match self.state.get() {
-            State::Running => true,
-            State::YieldedFor(_) => self.is_yield_wait_for_ready.get(),
-            State::Yielded => self.tasks.map_or(false, |ring_buf| ring_buf.has_elements()),
-            _ => false,
-        }
     }
 
     fn remove_pending_upcalls(&self, upcall_id: UpcallId) -> usize {
@@ -1592,10 +1607,6 @@ impl<C: Chip, D: 'static + ProcessStandardDebug> Process for ProcessStandard<'_,
 
     fn debug_timeslice_expiration_count(&self) -> usize {
         self.debug.get_timeslice_expiration_count()
-    }
-
-    fn debug_timeslice_expired(&self) {
-        self.debug.increment_timeslice_expiration_count();
     }
 
     fn debug_syscall_called(&self, last_syscall: Syscall) {
