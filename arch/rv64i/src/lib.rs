@@ -19,6 +19,7 @@ pub use riscv::initialize_ram_jump_to_main;
 pub use riscv::pmp;
 pub use riscv::print_mcause;
 pub use riscv::print_riscv_state;
+pub use riscv::sbi;
 pub use riscv::semihost_command;
 pub use riscv::start_trap;
 pub use riscv::support;

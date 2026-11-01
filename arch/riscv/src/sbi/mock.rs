@@ -15,7 +15,10 @@ use kernel::debug;
 use kernel::process::ProcessId;
 use kernel::utilities::cells::MapCell;
 
-use super::{SbiBoundary, SbiCallResult, SbiHandler, SbiRet, SbiTrap, base_fid, eid, error};
+use super::{
+    SbiBoundary, SbiCallResult, SbiGuestInterrupts, SbiHandler, SbiRet, SbiTrap, base_fid, eid,
+    error,
+};
 
 const GREETING: &[u8] = b"Hello from an SBI guest!\n";
 
@@ -44,7 +47,15 @@ impl MockSbiGuest {
 impl SbiBoundary for MockSbiGuest {
     type StoredState = MockSbiGuestState;
 
-    unsafe fn switch_to_guest(&self, state: &mut MockSbiGuestState) -> SbiTrap {
+    fn initial_state(&self) -> MockSbiGuestState {
+        MockSbiGuestState::default()
+    }
+
+    unsafe fn switch_to_guest(
+        &self,
+        state: &mut MockSbiGuestState,
+        _interrupts: &SbiGuestInterrupts,
+    ) -> SbiTrap {
         // The guest checks that the SBI calls it relies on succeeded.
         if let Some(ret) = state.last_ret {
             if ret.error != error::SUCCESS || (state.pc == 2 && ret.value == 0) {

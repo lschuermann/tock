@@ -180,6 +180,10 @@ pub unsafe fn main() {
         rv32i::sbi::mock::MockSbiGuest,
         rv32i::sbi::mock::MockSbiGuest
     );
+    let sbi_interrupts = static_init!(
+        rv32i::sbi::SbiGuestInterrupts,
+        rv32i::sbi::SbiGuestInterrupts::new()
+    );
     let sbi_handler = static_init!(
         rv32i::sbi::mock::MockSbiHandler,
         rv32i::sbi::mock::MockSbiHandler::new()
@@ -189,7 +193,7 @@ pub unsafe fn main() {
             |processid| {
                 static_init!(
                     SbiProcess,
-                    rv32i::sbi::SbiProcess::new(processid, sbi_guest, sbi_handler)
+                    rv32i::sbi::SbiProcess::new(processid, sbi_guest, sbi_handler, sbi_interrupts)
                 )
             },
             &external_process_cap,
